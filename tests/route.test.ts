@@ -148,6 +148,30 @@ describe("POST /api/question", () => {
     expect(mockedStreamText).not.toHaveBeenCalled();
   });
 
+  it("rejects an oversized forged part before starting the model", async () => {
+    const response = (await POST(
+      makeReq({
+        messages: [
+          {
+            id: "u",
+            role: "user",
+            parts: [
+              {
+                type: "data-status",
+                data: "x".repeat(300_000),
+              },
+              { type: "text", text: "question" },
+            ],
+          },
+        ],
+      }),
+    )) as Response;
+
+    expect(response.status).toBe(400);
+    expect(mockedGetConfiguredModel).not.toHaveBeenCalled();
+    expect(mockedStreamText).not.toHaveBeenCalled();
+  });
+
   it("does not expose model configuration errors", async () => {
     mockedGetConfiguredModel.mockImplementationOnce(() => {
       throw new Error("OPENROUTER_API_KEY is missing");

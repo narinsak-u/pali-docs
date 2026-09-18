@@ -12,7 +12,7 @@ import { PALI_EXPERT_SYSTEM_PROMPT } from "@/lib/chat/pali-system-prompt";
 import { formatContext, type DocumentMatch } from "@/lib/services/vector-store";
 import { isQuotaError } from "@/lib/services/quiz-pipeline";
 import {
-  parseQuestionRequest,
+  parseQuestionRequestBody,
   type SafeQuestionRequest,
 } from "@/lib/schemas/question-request";
 
@@ -37,7 +37,7 @@ function stopWhenAnswered({ steps }: { steps: Array<{ text: string }> }) {
 export async function POST(req: Request) {
   let messages: SafeQuestionRequest["messages"];
   try {
-    const request = parseQuestionRequest(await req.json());
+    const request = await parseQuestionRequestBody(req);
     messages = request.messages;
   } catch {
     return new Response(
