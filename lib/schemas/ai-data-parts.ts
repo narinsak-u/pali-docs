@@ -20,6 +20,31 @@ export const suggestionsPartSchema = z.object({
   suggestions: z.array(z.string().min(1)).min(1).max(3),
 });
 
+export const citationSchema = z
+  .object({
+    id: z.string().min(1),
+    source: z.string().min(1),
+    title: z.string().min(1),
+    section: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const citationsPartSchema = z.object({
+  citations: z.array(citationSchema),
+});
+
+export const agentTurnOutcomeSchema = z.enum([
+  "answered",
+  "insufficient-evidence",
+  "retrieval-unavailable",
+  "failed",
+]);
+
+export const outcomePartSchema = z.object({
+  outcome: agentTurnOutcomeSchema,
+  code: z.string().min(1).optional(),
+});
+
 export const questionPartSchema = z.object({
   id: z.string().min(1),
   question: z.string().min(1),
@@ -37,6 +62,8 @@ export const statusPartSchema = z.object({
 export type ReasoningPart = z.infer<typeof reasoningPartSchema>;
 export type TaskPart = z.infer<typeof taskPartSchema>;
 export type SuggestionsPart = z.infer<typeof suggestionsPartSchema>;
+export type CitationsPart = z.infer<typeof citationsPartSchema>;
+export type OutcomePart = z.infer<typeof outcomePartSchema>;
 export type QuestionPart = z.infer<typeof questionPartSchema>;
 export type StatusPart = z.infer<typeof statusPartSchema>;
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
