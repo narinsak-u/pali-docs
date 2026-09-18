@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
-  reasoningPartSchema,
-  taskPartSchema,
-  suggestionsPartSchema,
-  taskStatusSchema,
+  agentTurnOutcomeSchema,
+  citationsPartSchema,
+  outcomePartSchema,
   questionPartSchema,
+  reasoningPartSchema,
+  suggestionsPartSchema,
+  taskPartSchema,
+  taskStatusSchema,
 } from "@/lib/schemas/ai-data-parts";
 
 describe("ai-data-parts", () => {
@@ -81,6 +84,53 @@ describe("ai-data-parts", () => {
     expect(() => suggestionsPartSchema.parse({ suggestions: [] })).toThrow();
     expect(() =>
       suggestionsPartSchema.parse({ suggestions: ["q1", "q2", "q3", "q4"] }),
+    ).toThrow();
+  });
+
+  it("accepts canonical citations and all runner outcomes", () => {
+    expect(
+      citationsPartSchema.parse({
+        citations: [
+          {
+            id: "doc-1",
+            source: "canon",
+            title: "Dhamma",
+            section: "1.1",
+          },
+        ],
+      }),
+    ).toEqual({
+      citations: [
+        {
+          id: "doc-1",
+          source: "canon",
+          title: "Dhamma",
+          section: "1.1",
+        },
+      ],
+    });
+
+    for (const outcome of [
+      "answered",
+      "insufficient-evidence",
+      "retrieval-unavailable",
+      "failed",
+    ]) {
+      expect(agentTurnOutcomeSchema.parse(outcome)).toBe(outcome);
+    }
+    expect(
+      outcomePartSchema.parse({ outcome: "failed", code: "model_error" }),
+    ).toEqual({ outcome: "failed", code: "model_error" });
+  });
+
+  it("rejects malformed citations and unknown outcomes", () => {
+    expect(() =>
+      citationsPartSchema.parse({
+        citations: [{ id: "", source: "canon", title: "Dhamma" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      outcomePartSchema.parse({ outcome: "partial" }),
     ).toThrow();
   });
 });
