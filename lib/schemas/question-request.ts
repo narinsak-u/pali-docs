@@ -5,6 +5,7 @@ const MAX_PARTS_PER_MESSAGE = 20;
 const MAX_MESSAGE_ID_LENGTH = 200;
 const MAX_TEXT_LENGTH = 4_000;
 const MAX_TOTAL_TEXT_LENGTH = 20_000;
+const MAX_REQUEST_BODY_BYTES = 256 * 1024;
 
 const rawMessageSchema = z.object({
   id: z.string().min(1).max(MAX_MESSAGE_ID_LENGTH),
@@ -88,4 +89,52 @@ export function parseQuestionRequest(value: unknown): SafeQuestionRequest {
     .filter((message) => message.parts.length > 0);
 
   return safeQuestionRequestSchema.parse({ messages });
+}
+
+export async function parseQuestionRequestBody(
+  request: Request,
+): Promise<SafeQuestionRequest> {
+  const declaredLength = request.headers.get("content-length");
+  if (
+    declaredLength !== null &&
+    Number(declaredLength) > MAX_REQUEST_BODY_BYTES
+  ) {
+    await request.body?.cancel();
+    throw new Error("Question request body is too large");
+  }
+
+  if (!request.body) {
+    throw new Error("Question request body is required");
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+        await reader.cancel();
+        throw new Error("Question request body is too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  const value: unknown = JSON.parse(
+    new TextDecoder("utf-8", { fatal: true }).decode(body),
+  );
+  return parseQuestionRequest(value);
 }

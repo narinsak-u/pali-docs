@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseQuestionRequest } from "@/lib/schemas/question-request";
+import {
+  parseQuestionRequest,
+  parseQuestionRequestBody,
+} from "@/lib/schemas/question-request";
 
 describe("parseQuestionRequest", () => {
   it("accepts bounded user and assistant text history", () => {
@@ -149,5 +152,55 @@ describe("parseQuestionRequest", () => {
     expect(parsed.messages[0].parts).toEqual([
       { type: "text", text: "prior answer" },
     ]);
+  });
+
+  it("parses a bounded request body without relying on Content-Length", async () => {
+    const request = new Request("http://localhost/api/question", {
+      method: "POST",
+      body: JSON.stringify({
+        messages: [
+          {
+            id: "u",
+            role: "user",
+            parts: [{ type: "text", text: "question" }],
+          },
+        ],
+      }),
+    });
+    expect(request.headers.has("content-length")).toBe(false);
+
+    await expect(parseQuestionRequestBody(request)).resolves.toEqual({
+      messages: [
+        {
+          id: "u",
+          role: "user",
+          parts: [{ type: "text", text: "question" }],
+        },
+      ],
+    });
+  });
+
+  it("rejects an oversized raw body with an untrustworthy Content-Length", async () => {
+    const request = new Request("http://localhost/api/question", {
+      method: "POST",
+      headers: { "Content-Length": "1" },
+      body: JSON.stringify({
+        messages: [
+          {
+            id: "u",
+            role: "user",
+            parts: [
+              {
+                type: "data-status",
+                data: "x".repeat(300_000),
+              },
+              { type: "text", text: "question" },
+            ],
+          },
+        ],
+      }),
+    });
+
+    await expect(parseQuestionRequestBody(request)).rejects.toThrow();
   });
 });
