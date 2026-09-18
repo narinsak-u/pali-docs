@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/services/embedding", () => ({
-  generateEmbedding: vi.fn(),
+  generateQueryEmbedding: vi.fn(),
 }));
 vi.mock("@/lib/services/vector-store", () => ({
   queryPinecone: vi.fn(),
@@ -9,11 +9,11 @@ vi.mock("@/lib/services/vector-store", () => ({
 }));
 
 import { searchDocuments, runRAG, extractTextFromMessages } from "@/lib/services/rag-pipeline";
-import { generateEmbedding } from "@/lib/services/embedding";
+import { generateQueryEmbedding } from "@/lib/services/embedding";
 import { queryPinecone } from "@/lib/services/vector-store";
 import type { UIMessage } from "ai";
 
-const mockedEmbed = vi.mocked(generateEmbedding);
+const mockedEmbed = vi.mocked(generateQueryEmbedding);
 const mockedQuery = vi.mocked(queryPinecone);
 
 beforeEach(() => {
