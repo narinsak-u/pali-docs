@@ -10,39 +10,20 @@ vi.mock("@/lib/config/rag", () => ({
   getRagConfig: vi.fn(() => ({ PINECONE_NAMESPACE: "" })),
 }));
 
-import { queryPinecone, formatContext, type DocumentMatch } from "@/lib/services/vector-store";
+import { queryPinecone } from "@/lib/services/vector-store";
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("formatContext", () => {
-  it("returns empty string for empty matches", () => {
-    expect(formatContext([])).toBe("");
-  });
-
-  it("returns single match text with no separator", () => {
-    const matches: DocumentMatch[] = [
-      { id: "1", score: 0.9, text: "passage one" },
-    ];
-    expect(formatContext(matches)).toBe("passage one");
-  });
-
-  it("joins multiple matches with triple-dash separator", () => {
-    const matches: DocumentMatch[] = [
-      { id: "1", score: 0.9, text: "passage one" },
-      { id: "2", score: 0.8, text: "passage two" },
-    ];
-    expect(formatContext(matches)).toBe("passage one\n---\npassage two");
-  });
-});
 
 describe("queryPinecone", () => {
-  it("returns empty array when no matches returned", async () => {
+  it("queries the configured namespace without forwarding an unsupported signal", async () => {
     const mockQuery = vi.fn().mockResolvedValue({ matches: [] });
     mockedNamespace.mockReturnValue({ query: mockQuery });
+    const controller = new AbortController();
 
-    const result = await queryPinecone([0.1, 0.2], 5);
+    const result = await queryPinecone([0.1, 0.2], 5, controller.signal);
 
     expect(mockedNamespace).toHaveBeenCalledWith("");
     expect(mockQuery).toHaveBeenCalledWith({
@@ -53,12 +34,30 @@ describe("queryPinecone", () => {
     expect(result).toEqual([]);
   });
 
-  it("maps and filters results correctly", async () => {
+  it("maps only citation-safe metadata into grounding passages", async () => {
     const mockQuery = vi.fn().mockResolvedValue({
       matches: [
-        { id: "a", score: 0.95, metadata: { text: "text A" } },
-        { id: "b", score: 0.85, metadata: { text: "text B" } },
-        { id: "c", score: 0.0, metadata: { text: "" } },
+        {
+          id: "a",
+          score: 0.95,
+          metadata: {
+            text: "text A",
+            source: "part-1/chapter-1",
+            title: "บทที่ 1",
+            section: "section-a",
+            ignored: "not application metadata",
+          },
+        },
+        {
+          id: "b",
+          score: 0.85,
+          metadata: {
+            text: "text B",
+            source: "part-1/chapter-2",
+            title: "บทที่ 2",
+            section: 42,
+          },
+        },
       ],
     });
     mockedNamespace.mockReturnValue({ query: mockQuery });
@@ -66,22 +65,53 @@ describe("queryPinecone", () => {
     const result = await queryPinecone([0.1], 3);
 
     expect(result).toEqual([
-      { id: "a", score: 0.95, text: "text A" },
-      { id: "b", score: 0.85, text: "text B" },
-      // id "c" is filtered out because text is empty
+      {
+        id: "a",
+        score: 0.95,
+        text: "text A",
+        source: "part-1/chapter-1",
+        title: "บทที่ 1",
+        section: "section-a",
+      },
+      {
+        id: "b",
+        score: 0.85,
+        text: "text B",
+        source: "part-1/chapter-2",
+        title: "บทที่ 2",
+      },
     ]);
   });
 
-  it("handles missing metadata gracefully", async () => {
+  it.each([
+    ["missing metadata", null],
+    [
+      "blank text",
+      { text: " ", source: "part-1/chapter-1", title: "บทที่ 1" },
+    ],
+    ["blank source", { text: "text", source: "", title: "บทที่ 1" }],
+    [
+      "non-string title",
+      { text: "text", source: "part-1/chapter-1", title: 1 },
+    ],
+  ])("drops a match with %s", async (_case, metadata) => {
     const mockQuery = vi.fn().mockResolvedValue({
-      matches: [
-        { id: "a", metadata: null },
-      ],
+      matches: [{ id: "unsafe", score: 0.9, metadata }],
     });
     mockedNamespace.mockReturnValue({ query: mockQuery });
 
-    const result = await queryPinecone([0.1], 5);
+    await expect(queryPinecone([0.1], 5)).resolves.toEqual([]);
+  });
 
-    expect(result).toEqual([]);
+  it("checks an AbortSignal before the Pinecone query", async () => {
+    const mockQuery = vi.fn();
+    mockedNamespace.mockReturnValue({ query: mockQuery });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      queryPinecone([0.1], 5, controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });
