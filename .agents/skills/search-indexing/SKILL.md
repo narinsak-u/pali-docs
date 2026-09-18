@@ -7,7 +7,7 @@ description: Use when configuring, updating, or debugging the Algolia/Pinecone s
 
 ## Overview
 
-Manage search indexing with Algolia for full-text search and Pinecone for vector search. Index updates run via npm script after build.
+Manage search indexing with Algolia for full-text search and Pinecone for vector search. Index updates run via a Bun script after build.
 
 ## When to Use
 
@@ -19,18 +19,15 @@ Manage search indexing with Algolia for full-text search and Pinecone for vector
 
 ## Indexing Pipeline
 
-```dot
-digraph indexing {
   "MDX Content" -> "static.json" [label="build"]
-  "static.json" -> "Algolia" [label="npm run index"]
-}
+  "static.json" -> "Algolia" [label="bun run index"]
 ```
 
 ## Commands
 
 ```bash
-npm run index    # Update Algolia index
-npm run build    # Build + update index
+bun run index    # Update Algolia index
+bun run build    # Build + update index
 ```
 
 ## Key Files
@@ -65,7 +62,7 @@ PINECONE_INDEX_NAME=
 
 ## Common Issues
 
-- **Missing content in search**: Run `npm run index` after adding new docs
+- **Missing content in search**: Run `bun run index` after adding new docs
 - **Stale results**: Clear browser cache or re-run index
 - **Missing env vars**: Create `.env.local` with required keys
 
@@ -73,6 +70,6 @@ PINECONE_INDEX_NAME=
 
 | Task | Command |
 |------|---------|
-| Update index | `npm run index` |
-| Full rebuild | `npm run build` |
+| Update index | `bun run index` |
+| Full rebuild | `bun run build` |
 | Test search | Visit `/docs` and use search |

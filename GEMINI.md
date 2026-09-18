@@ -49,13 +49,13 @@ scripts/               # Maintenance scripts (e.g., search indexing)
 
 | Command | Purpose |
 | :--- | :--- |
-| `npm run dev` | Starts development server with Turbopack. |
-| `npm run build` | Builds for production and updates the search index. |
-| `npm run start` | Runs the production server. |
-| `npm run index` | Manually triggers the search index update. |
-| `npm run postinstall` | Generates Fumadocs types and indexes. |
+| `bun run dev` | Starts development server with Turbopack. |
+| `bun run build` | Builds for production and updates the search index. |
+| `bun run start` | Runs the production server. |
+| `bun run index` | Manually triggers the search index update. |
+| `bun run postinstall` | Runs the Fumadocs generation script. |
 
-*Note: Use `next build` for full type checking and production readiness verification.*
+*Note: Use `bun run build` for full type checking and production readiness verification.*
 
 ## 💡 Development Guidelines
 

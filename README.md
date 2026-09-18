@@ -299,22 +299,22 @@ ALGOLIA_INDEX_NAME=pali_docs
 
 ```bash
 # Build first (generates static.json)
-npm run build
+bun run build
 
 # Sync to Algolia
-npm run index
+bun run index
 
 # For Pinecone: run your own upsert script
-node scripts/upsert-pinecone.mjs
+bun scripts/upsert-pinecone.mjs
 ```
 
 ### 7️⃣ Start Developing
 
 ```bash
-npm run dev          # Dev server with Turbopack
-npm test             # Watch mode tests
-npm run test:run     # Run all tests once
-npx vitest run tests/route.test.ts  # Single test
+bun run dev          # Dev server with Turbopack
+bun test             # Watch mode tests
+bun run test:run     # Run all tests once
+bunx vitest run tests/route.test.ts  # Single test
 ```
 
 ## 📚 Learn More
