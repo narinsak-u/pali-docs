@@ -168,3 +168,11 @@ Issues and specs live in GitHub Issues; use the `gh` CLI. See `docs/agents/issue
 ### Domain docs
 
 Single-context domain documentation uses root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+
+### Stacked work
+
+For large, multi-part jobs, create the stack before editing and use `gh stack add <branch>` for each dependent review layer. Keep one concern per layer; follow `skill://gh-stack` for stack setup and synchronization.
+
+### Commit messages
+
+Use `<emoji> <type>(<task>/<domain>): <message>` for every commit. Example: `✨ feat(quiz/flow): add timer state`. Keep the message imperative and focused.
