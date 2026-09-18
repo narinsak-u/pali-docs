@@ -4,7 +4,10 @@ const mockedNamespace = vi.hoisted(() => vi.fn());
 const mockedIndex = vi.hoisted(() => ({ namespace: mockedNamespace }));
 
 vi.mock("@/lib/pinecone", () => ({
-  index: mockedIndex,
+  getPineconeIndex: vi.fn(() => mockedIndex),
+}));
+vi.mock("@/lib/config/rag", () => ({
+  getRagConfig: vi.fn(() => ({ PINECONE_NAMESPACE: "" })),
 }));
 
 import { queryPinecone, formatContext, type DocumentMatch } from "@/lib/services/vector-store";

@@ -1,28 +1,37 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import type { LanguageModel } from "ai";
+import { getModelConfig } from "@/lib/config/model";
 
-const providerName = (process.env.PROVIDER_NAME ?? "openrouter").toLowerCase();
+export interface ConfiguredModel {
+  model: LanguageModel;
+  providerName: "openrouter" | "opencode";
+  modelId: string;
+}
 
-const config =
-  providerName === "opencode"
-    ? {
-        name: "opencode",
-        baseURL: "https://opencode.ai/zen/go/v1",
-        apiKey: process.env.OPENCODE_API_KEY,
-      }
-    : {
-        name: "openrouter",
-        baseURL: "https://openrouter.ai/api/v1",
-        apiKey: process.env.OPENROUTER_API_KEY,
-      };
+export function getConfiguredModel(): ConfiguredModel {
+  const config = getModelConfig();
 
-export const llm = createOpenAICompatible({
-  name: config.name,
-  baseURL: config.baseURL,
-  apiKey: config.apiKey,
-});
+  if (config.PROVIDER_NAME === "opencode") {
+    const provider = createOpenAICompatible({
+      name: "opencode",
+      baseURL: "https://opencode.ai/zen/go/v1",
+      apiKey: config.OPENCODE_API_KEY,
+    });
+    return {
+      model: provider(config.OPENCODE_LLM_MODEL),
+      providerName: "opencode",
+      modelId: config.OPENCODE_LLM_MODEL,
+    };
+  }
 
-export function getDefaultModel(): string {
-  return providerName === "opencode"
-    ? (process.env.OPENCODE_LLM_MODEL ?? "deepseek-v4-flash")
-    : (process.env.OPENROUTER_LLM_MODEL ?? "google/gemma-3-27b-it:free");
+  const provider = createOpenAICompatible({
+    name: "openrouter",
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: config.OPENROUTER_API_KEY,
+  });
+  return {
+    model: provider(config.OPENROUTER_LLM_MODEL),
+    providerName: "openrouter",
+    modelId: config.OPENROUTER_LLM_MODEL,
+  };
 }
