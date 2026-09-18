@@ -2,6 +2,7 @@ import { LRUCache } from "lru-cache";
 import { pc } from "@/lib/pinecone";
 
 const MODEL = "llama-text-embed-v2";
+const INPUT_TYPE = "query" as const;
 const CACHE_LIMIT = 100;
 const CACHE_TTL_MS = 1000 * 60 * 60;
 
@@ -10,42 +11,20 @@ const embeddingCache = new LRUCache<string, number[]>({
   ttl: CACHE_TTL_MS,
 });
 
-export async function generateEmbedding(text: string): Promise<number[]> {
-  const cached = embeddingCache.get(text);
+export async function generateQueryEmbedding(text: string): Promise<number[]> {
+  const cacheKey = `${MODEL}:${INPUT_TYPE}:${text}`;
+  const cached = embeddingCache.get(cacheKey);
   if (cached) return cached;
 
   const result = await pc.inference.embed(MODEL, [text], {
-    inputType: "passage",
+    inputType: INPUT_TYPE,
     truncate: "END",
   });
-  const values = (result.data[0] as { values: number[] }).values;
-  embeddingCache.set(text, values);
-  return values;
-}
-
-export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
-  const results: (number[] | undefined)[] = texts.map((t) => embeddingCache.get(t));
-  const missingIdx: number[] = [];
-  const missingTexts: string[] = [];
-  results.forEach((r, i) => {
-    if (!r) {
-      missingIdx.push(i);
-      missingTexts.push(texts[i]);
-    }
-  });
-
-  if (missingTexts.length > 0) {
-    const response = await pc.inference.embed(MODEL, missingTexts, {
-      inputType: "passage",
-      truncate: "END",
-    });
-    response.data.forEach((d, i) => {
-      const values = (d as { values: number[] }).values;
-      const text = missingTexts[i];
-      embeddingCache.set(text, values);
-      results[missingIdx[i]] = values;
-    });
+  const embedding = result.data[0];
+  if (!embedding || !("values" in embedding) || !Array.isArray(embedding.values)) {
+    throw new Error("Pinecone query embedding response is missing vector values");
   }
-
-  return results as number[][];
+  const values = embedding.values;
+  embeddingCache.set(cacheKey, values);
+  return values;
 }

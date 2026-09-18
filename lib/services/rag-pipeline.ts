@@ -3,7 +3,7 @@ import {
   formatContext,
   type DocumentMatch,
 } from "./vector-store";
-import { generateEmbedding } from "./embedding";
+import { generateQueryEmbedding } from "./embedding";
 import type { UIMessage } from "ai";
 
 export interface RAGOptions {
@@ -37,7 +37,7 @@ export async function searchDocuments(
   const topK = options.topK ?? 5;
   if (!query) return { context: "", matches: [] };
 
-  const embedding = await generateEmbedding(query);
+  const embedding = await generateQueryEmbedding(query);
   const matches = await queryPinecone(embedding, topK);
   const context = formatContext(matches);
   return { context, matches };
