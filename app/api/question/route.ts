@@ -6,10 +6,10 @@ import {
   tool,
 } from "ai";
 import { z } from "zod";
-import { searchDocuments } from "@/lib/services/rag-pipeline";
-import { getConfiguredModel } from "@/lib/services/llm-provider";
 import { PALI_EXPERT_SYSTEM_PROMPT } from "@/lib/chat/pali-system-prompt";
-import { formatContext, type DocumentMatch } from "@/lib/services/vector-store";
+import { retrieve } from "@/lib/rag/retriever";
+import type { GroundingBundle } from "@/lib/rag/types";
+import { getConfiguredModel } from "@/lib/services/llm-provider";
 import { isQuotaError } from "@/lib/services/quiz-pipeline";
 import {
   parseQuestionRequestBody,
@@ -57,7 +57,7 @@ export async function POST(req: Request) {
       originalMessages: messages,
       execute: async ({ writer }) => {
         let searchCompleted = false;
-        let cachedResult: { matches: DocumentMatch[] } | null = null;
+        let cachedResult: GroundingBundle | null = null;
         let suggestionsGenerated = false;
 
         // Signal the client that the model is processing the question
@@ -78,7 +78,7 @@ export async function POST(req: Request) {
               description:
                 "Search the Pali textbook corpus for relevant passages.",
               inputSchema: z.object({ query: z.string().min(1) }),
-              execute: async ({ query }, { toolCallId }) => {
+              execute: async ({ query }, { toolCallId, abortSignal }) => {
                 // Return cached results on repeated calls — prevents duplicate Pinecone queries
                 if (searchCompleted && cachedResult) {
                   writer.write({
@@ -87,7 +87,10 @@ export async function POST(req: Request) {
                       id: toolCallId,
                       label: "ค้นหาเอกสาร",
                       status: "done",
-                      matchCount: cachedResult.matches.length,
+                      matchCount:
+                        cachedResult.status === "grounded"
+                          ? cachedResult.passages.length
+                          : 0,
                     },
                   });
                   return cachedResult;
@@ -103,48 +106,48 @@ export async function POST(req: Request) {
                     query,
                   },
                 });
-                try {
-                  const { matches } = await searchDocuments(query, {
-                    topK: 10,
-                  });
-                  cachedResult = { matches };
-                  // Notify client that search completed with N matches
-                  writer.write({
-                    type: "data-task",
-                    data: {
-                      id: toolCallId,
-                      label: "ค้นหาเอกสาร",
-                      status: "done",
-                      matchCount: matches.length,
-                    },
-                  });
-                  const excerpts = matches.map((m) =>
-                    m.text.slice(0, 120).trim(),
-                  );
-                  // Show matched excerpts to the user
-                  writer.write({
-                    type: "data-reasoning",
-                    data: {
-                      summary: `พบเอกสารที่เกี่ยวข้อง ${matches.length} รายการ`,
-                      excerpts,
-                    },
-                  });
-                  return { matches };
-                } catch (e: unknown) {
-                  const message =
-                    e instanceof Error ? e.message : "search failed";
-                  cachedResult = { matches: [] };
+
+                const grounding = await retrieve(
+                  { query, attempt: 0 },
+                  abortSignal,
+                );
+                cachedResult = grounding;
+
+                if (grounding.status === "unavailable") {
                   writer.write({
                     type: "data-task",
                     data: {
                       id: toolCallId,
                       label: "ค้นหาเอกสาร",
                       status: "error",
-                      message,
+                      message: grounding.errorCode,
                     },
                   });
-                  return { matches: [] };
+                  return grounding;
                 }
+
+                const matchCount = grounding.passages.length;
+                writer.write({
+                  type: "data-task",
+                  data: {
+                    id: toolCallId,
+                    label: "ค้นหาเอกสาร",
+                    status: "done",
+                    matchCount,
+                  },
+                });
+                const excerpts = grounding.passages.map((passage) =>
+                  passage.text.slice(0, 120).trim(),
+                );
+                // Show matched excerpts to the user
+                writer.write({
+                  type: "data-reasoning",
+                  data: {
+                    summary: `พบเอกสารที่เกี่ยวข้อง ${matchCount} รายการ`,
+                    excerpts,
+                  },
+                });
+                return grounding;
               },
             }),
             // Generate 3 Thai follow-up questions after the answer
@@ -174,25 +177,23 @@ export async function POST(req: Request) {
                   tr.toolName === "searchDocs" &&
                   tr.output &&
                   typeof tr.output === "object" &&
-                  "matches" in tr.output
+                  "status" in tr.output &&
+                  tr.output.status === "grounded" &&
+                  "context" in tr.output &&
+                  typeof tr.output.context === "string"
                 ) {
-                  const matches = (tr.output as { matches: DocumentMatch[] })
-                    .matches;
-                  if (matches.length > 0) {
-                    const context = formatContext(matches);
-                    writer.write({
-                      type: "data-status",
-                      data: { phase: "answering" },
-                    });
-                    return {
-                      system: buildSystemWithContext(
-                        PALI_EXPERT_SYSTEM_PROMPT,
-                        context,
-                      ),
-                      // Remove searchDocs so model cannot call it again — saves cost
-                      activeTools: ["suggestQuestions"] as const,
-                    };
-                  }
+                  writer.write({
+                    type: "data-status",
+                    data: { phase: "answering" },
+                  });
+                  return {
+                    system: buildSystemWithContext(
+                      PALI_EXPERT_SYSTEM_PROMPT,
+                      tr.output.context,
+                    ),
+                    // Remove searchDocs so model cannot call it again — saves cost
+                    activeTools: ["suggestQuestions"] as const,
+                  };
                 }
               }
             }

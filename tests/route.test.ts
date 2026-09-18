@@ -70,7 +70,7 @@ vi.mock("ai", () => ({
   tool: vi.fn((opts) => opts),
 }));
 
-vi.mock("@/lib/services/rag-pipeline", () => ({ searchDocuments: vi.fn() }));
+vi.mock("@/lib/rag/retriever", () => ({ retrieve: vi.fn() }));
 vi.mock("@/lib/services/llm-provider", () => ({
   getConfiguredModel: vi.fn(() => ({
     model: "configured-model",
@@ -81,20 +81,17 @@ vi.mock("@/lib/services/llm-provider", () => ({
 vi.mock("@/lib/chat/pali-system-prompt", () => ({
   PALI_EXPERT_SYSTEM_PROMPT: "PROMPT",
 }));
-vi.mock("@/lib/services/vector-store", () => ({
-  formatContext: vi.fn((matches: Array<{ text: string }>) =>
-    matches.map((m) => m.text).join("|MOCK|"),
-  ),
-}));
 
 import { POST } from "@/app/api/question/route";
-import { searchDocuments } from "@/lib/services/rag-pipeline";
-import { formatContext } from "@/lib/services/vector-store";
+import { retrieve } from "@/lib/rag/retriever";
+import type {
+  GroundingBundle,
+  GroundingPassage,
+} from "@/lib/rag/types";
 import { streamText } from "ai";
 import { getConfiguredModel } from "@/lib/services/llm-provider";
 
-const mockedSearch = vi.mocked(searchDocuments);
-const mockedFormatContext = vi.mocked(formatContext);
+const mockedRetrieve = vi.mocked(retrieve);
 const mockedStreamText = vi.mocked(streamText);
 const mockedGetConfiguredModel = vi.mocked(getConfiguredModel);
 
@@ -111,6 +108,58 @@ function makeReq(body: unknown): Request {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+function makeGrounded(
+  passages: GroundingPassage[],
+  context = "ctx",
+): GroundingBundle {
+  return {
+    status: "grounded",
+    query: "dhamma",
+    corpusRevision: "corpus-2026-09-18",
+    passages,
+    citations: passages.map(({ id, source, title, section }) => ({
+      id,
+      source,
+      title,
+      ...(section === undefined ? {} : { section }),
+    })),
+    context,
+  };
+}
+
+function makePassage(
+  id: string,
+  score: number,
+  text: string,
+): GroundingPassage {
+  return {
+    id,
+    score,
+    text,
+    source: `part-1/${id}`,
+    title: `Title ${id}`,
+  };
+}
+
+function makeInsufficientEvidence(): GroundingBundle {
+  return {
+    status: "insufficient-evidence",
+    query: "dhamma",
+    corpusRevision: "corpus-2026-09-18",
+    passages: [],
+    citations: [],
+  };
+}
+
+function makeUnavailable(): GroundingBundle {
+  return {
+    status: "unavailable",
+    query: "dhamma",
+    corpusRevision: "corpus-2026-09-18",
+    errorCode: "vector_store_unavailable",
+  };
 }
 
 describe("POST /api/question", () => {
@@ -199,7 +248,7 @@ describe("POST /api/question", () => {
 
   describe("stopWhenAnswered", () => {
     it("stops at 5 steps or when answer text exceeds 150 chars", async () => {
-      mockedSearch.mockResolvedValue({ matches: [], context: "" });
+      mockedRetrieve.mockResolvedValue(makeInsufficientEvidence());
       await POST(
         makeReq({
           messages: [
@@ -231,13 +280,12 @@ describe("POST /api/question", () => {
 
   describe("searchDocs tool", () => {
     it("emits data-task (running, done) and data-reasoning on success", async () => {
-      mockedSearch.mockResolvedValue({
-        matches: [
-          { id: "a", score: 0.9, text: "passage A" },
-          { id: "b", score: 0.8, text: "passage B" },
-        ],
-        context: "ctx",
-      });
+      mockedRetrieve.mockResolvedValue(
+        makeGrounded([
+          makePassage("a", 0.9, "passage A"),
+          makePassage("b", 0.8, "passage B"),
+        ]),
+      );
 
       const result = (await POST(
         makeReq({
@@ -272,8 +320,8 @@ describe("POST /api/question", () => {
       expect((reasoning!.data as { summary: string }).summary).toMatch(/2/);
     });
 
-    it("emits data-task with status=error when searchDocuments throws", async () => {
-      mockedSearch.mockRejectedValue(new Error("Pinecone timeout"));
+    it("emits data-task with status=error when retrieval is unavailable", async () => {
+      mockedRetrieve.mockResolvedValue(makeUnavailable());
 
       const result = (await POST(
         makeReq({
@@ -289,13 +337,13 @@ describe("POST /api/question", () => {
           (w.data as { status: string }).status === "error",
       );
       expect(errored).toBeDefined();
-      expect((errored!.data as { message: string }).message).toMatch(
-        /Pinecone/,
+      expect((errored!.data as { message: string }).message).toBe(
+        "vector_store_unavailable",
       );
     });
 
-    it("only runs searchDocuments once and emits one error when LLM calls searchDocs 4 times", async () => {
-      mockedSearch.mockRejectedValue(new Error("Pinecone timeout"));
+    it("only retrieves once and emits one error when LLM calls searchDocs 4 times", async () => {
+      mockedRetrieve.mockResolvedValue(makeUnavailable());
 
       const result = (await POST(
         makeReq({
@@ -319,16 +367,14 @@ describe("POST /api/question", () => {
           (w.data as { status: string }).status === "error",
       );
 
-      expect(mockedSearch).toHaveBeenCalledTimes(1);
+      expect(mockedRetrieve).toHaveBeenCalledTimes(1);
       expect(errorWrites).toHaveLength(1);
     });
   });
 
   describe("prepareStep", () => {
-    async function triggerPrepareStep(
-      matches: Array<{ id: string; score: number; text: string }>,
-    ) {
-      mockedSearch.mockResolvedValue({ matches, context: "ctx" });
+    async function capturePrepareStep(bundle: GroundingBundle) {
+      mockedRetrieve.mockResolvedValue(bundle);
       await POST(
         makeReq({
           messages: [
@@ -341,75 +387,50 @@ describe("POST /api/question", () => {
         | null;
     }
 
-    it("calls formatContext with the matches", async () => {
-      const matches = [
-        { id: "a", score: 0.9, text: "passage A" },
-        { id: "b", score: 0.8, text: "passage B" },
-      ];
-      const prepareStep = await triggerPrepareStep(matches);
-      expect(prepareStep).toBeDefined();
-
-      await prepareStep!({
-        steps: [
-          { toolResults: [{ toolName: "searchDocs", output: { matches } }] },
+    it("injects the grounded retriever context into the system prompt", async () => {
+      const bundle = makeGrounded(
+        [
+          makePassage("a", 0.9, "passage A"),
+          makePassage("b", 0.8, "passage B"),
         ],
-        stepNumber: 1,
-        model: {},
-        messages: [],
-      });
-
-      expect(mockedFormatContext).toHaveBeenCalledOnce();
-      expect(mockedFormatContext).toHaveBeenCalledWith(matches);
-    });
-
-    it("injects formatted context into the system prompt", async () => {
-      const matches = [
-        { id: "a", score: 0.9, text: "passage A" },
-        { id: "b", score: 0.8, text: "passage B" },
-      ];
-      const prepareStep = await triggerPrepareStep(matches);
+        "passage A|GROUNDED|passage B",
+      );
+      const prepareStep = await capturePrepareStep(bundle);
       expect(prepareStep).toBeDefined();
 
       const result = (await prepareStep!({
-        steps: [
-          { toolResults: [{ toolName: "searchDocs", output: { matches } }] },
-        ],
+        steps: [{ toolResults: [{ toolName: "searchDocs", output: bundle }] }],
         stepNumber: 1,
         model: {},
         messages: [],
       })) as { system?: string } | undefined;
 
       expect(result).toBeDefined();
-      expect(result!.system).toContain("passage A|MOCK|passage B");
+      expect(result!.system).toContain("passage A|GROUNDED|passage B");
       expect(result!.system).toContain("PROMPT");
     });
 
-    it("returns undefined when matches is empty (no context injection)", async () => {
-      const prepareStep = await triggerPrepareStep([]);
+    it("does not inject context for insufficient evidence", async () => {
+      const bundle = makeInsufficientEvidence();
+      const prepareStep = await capturePrepareStep(bundle);
       expect(prepareStep).toBeDefined();
 
       const result = await prepareStep!({
-        steps: [
-          {
-            toolResults: [{ toolName: "searchDocs", output: { matches: [] } }],
-          },
-        ],
+        steps: [{ toolResults: [{ toolName: "searchDocs", output: bundle }] }],
         stepNumber: 1,
         model: {},
         messages: [],
       });
 
       expect(result).toBeUndefined();
-      expect(mockedFormatContext).not.toHaveBeenCalled();
     });
   });
 
   describe("suggestQuestions tool", () => {
     async function captureSuggestTool() {
-      mockedSearch.mockResolvedValue({
-        matches: [{ id: "a", score: 0.9, text: "t" }],
-        context: "ctx",
-      });
+      mockedRetrieve.mockResolvedValue(
+        makeGrounded([makePassage("a", 0.9, "t")]),
+      );
       await POST(
         makeReq({
           messages: [
