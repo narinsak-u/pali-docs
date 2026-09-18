@@ -1,4 +1,5 @@
-import { index } from "@/lib/pinecone";
+import { getPineconeIndex } from "@/lib/pinecone";
+import { getRagConfig } from "@/lib/config/rag";
 
 export interface DocumentMatch {
   id: string;
@@ -6,17 +7,18 @@ export interface DocumentMatch {
   text: string;
 }
 
-const namespace = process.env.PINECONE_NAMESPACE ?? "";
-
 export async function queryPinecone(
   embedding: number[],
   topK: number = 10
 ): Promise<DocumentMatch[]> {
-  const results = await index.namespace(namespace).query({
-    vector: embedding,
-    topK,
-    includeMetadata: true,
-  });
+  const config = getRagConfig();
+  const results = await getPineconeIndex()
+    .namespace(config.PINECONE_NAMESPACE)
+    .query({
+      vector: embedding,
+      topK,
+      includeMetadata: true,
+    });
 
   return results.matches
     .map((match) => ({

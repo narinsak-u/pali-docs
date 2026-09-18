@@ -1,5 +1,5 @@
 import { LRUCache } from "lru-cache";
-import { pc } from "@/lib/pinecone";
+import { getPineconeClient } from "@/lib/pinecone";
 
 const MODEL = "llama-text-embed-v2";
 const INPUT_TYPE = "query" as const;
@@ -16,7 +16,7 @@ export async function generateQueryEmbedding(text: string): Promise<number[]> {
   const cached = embeddingCache.get(cacheKey);
   if (cached) return cached;
 
-  const result = await pc.inference.embed(MODEL, [text], {
+  const result = await getPineconeClient().inference.embed(MODEL, [text], {
     inputType: INPUT_TYPE,
     truncate: "END",
   });

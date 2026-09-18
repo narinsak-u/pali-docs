@@ -33,11 +33,16 @@ vi.mock("@/data/quiz-content.json", () => ({
 }));
 
 vi.mock("@/lib/services/llm-provider", () => ({
-  llm: vi.fn(),
-  getDefaultModel: vi.fn(() => "mock"),
+  getConfiguredModel: vi.fn(() => ({
+    model: "configured-model",
+    providerName: "openrouter",
+    modelId: "openrouter/model",
+  })),
 }));
 
 import { generateQuizStream } from "@/lib/services/quiz-pipeline";
+import { streamText } from "ai";
+import { getConfiguredModel } from "@/lib/services/llm-provider";
 
 interface WriterMock {
   writes: Array<Record<string, unknown>>;
@@ -54,6 +59,11 @@ describe("generateQuizStream (UIMessageStream)", () => {
       amount: 1,
       topicId: "1",
     })) as unknown as { body: { writer: WriterMock } };
+
+    expect(getConfiguredModel).toHaveBeenCalledOnce();
+    expect(streamText).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "configured-model" }),
+    );
 
     const writes = result.body.writer.writes;
     const types = writes.map((w) => w.type);

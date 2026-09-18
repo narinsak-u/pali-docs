@@ -4,14 +4,17 @@ import {
   createUIMessageStreamResponse,
   streamText,
   tool,
-  type UIMessage,
 } from "ai";
 import { z } from "zod";
 import { searchDocuments } from "@/lib/services/rag-pipeline";
-import { llm, getDefaultModel } from "@/lib/services/llm-provider";
+import { getConfiguredModel } from "@/lib/services/llm-provider";
 import { PALI_EXPERT_SYSTEM_PROMPT } from "@/lib/chat/pali-system-prompt";
 import { formatContext, type DocumentMatch } from "@/lib/services/vector-store";
 import { isQuotaError } from "@/lib/services/quiz-pipeline";
+import {
+  parseQuestionRequest,
+  type SafeQuestionRequest,
+} from "@/lib/schemas/question-request";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -32,8 +35,22 @@ function stopWhenAnswered({ steps }: { steps: Array<{ text: string }> }) {
 }
 
 export async function POST(req: Request) {
+  let messages: SafeQuestionRequest["messages"];
   try {
-    const { messages }: { messages: UIMessage[] } = await req.json();
+    const request = parseQuestionRequest(await req.json());
+    messages = request.messages;
+  } catch {
+    return new Response(
+      JSON.stringify({
+        error: "invalid_request",
+        message: "Invalid request",
+      }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  try {
+    const { model } = getConfiguredModel();
 
     // Wrap the LLM call in a UI-aware message stream for real-time client updates
     const stream = createUIMessageStream({
@@ -51,7 +68,7 @@ export async function POST(req: Request) {
 
         // Core RAG: LLM with tools for searching the textbook corpus and suggesting follow-ups
         const result = streamText({
-          model: llm(getDefaultModel()),
+          model,
           system: PALI_EXPERT_SYSTEM_PROMPT,
           messages: convertToModelMessages(messages),
           stopWhen: stopWhenAnswered,
@@ -192,7 +209,6 @@ export async function POST(req: Request) {
     return createUIMessageStreamResponse({ stream }) as unknown as Response;
   } catch (error: unknown) {
     console.error("Question API error:", error);
-    const message = error instanceof Error ? error.message : "Unknown error";
     if (isQuotaError(error)) {
       return new Response(
         JSON.stringify({
@@ -202,9 +218,15 @@ export async function POST(req: Request) {
         { status: 429, headers: { "Content-Type": "application/json" } },
       );
     }
-    return new Response(JSON.stringify({ error: "internal_error", message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        error: "internal_error",
+        message: "Internal server error",
+      }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
   }
 }

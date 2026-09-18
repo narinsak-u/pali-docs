@@ -4,7 +4,7 @@ import {
   type InferUIMessageChunk,
   type UIMessage,
 } from "ai";
-import { llm, getDefaultModel } from "@/lib/services/llm-provider";
+import { getConfiguredModel } from "@/lib/services/llm-provider";
 import { quizResponseSchema } from "@/lib/schemas/quiz";
 import quizContent from "@/data/quiz-content.json";
 
@@ -108,9 +108,10 @@ export function generateQuizStream(
       // 6. Build the LLM prompt with context + instructions, then call streamText
       //    The model returns a JSON string matching quizResponseSchema
       const prompt = buildQuizPrompt(context, input.amount, input.topics);
+      const { model } = getConfiguredModel();
 
       const result = streamText({
-        model: llm(getDefaultModel()),
+        model,
         prompt,
       });
 

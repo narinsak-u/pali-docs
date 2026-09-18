@@ -71,13 +71,12 @@ vi.mock("ai", () => ({
 }));
 
 vi.mock("@/lib/services/rag-pipeline", () => ({ searchDocuments: vi.fn() }));
-vi.mock("@/lib/pinecone", () => ({
-  pc: { inference: { embed: vi.fn() } },
-  index: { namespace: vi.fn(() => ({ query: vi.fn() })) },
-}));
 vi.mock("@/lib/services/llm-provider", () => ({
-  llm: vi.fn(),
-  getDefaultModel: vi.fn(() => "mock"),
+  getConfiguredModel: vi.fn(() => ({
+    model: "configured-model",
+    providerName: "openrouter",
+    modelId: "openrouter/model",
+  })),
 }));
 vi.mock("@/lib/chat/pali-system-prompt", () => ({
   PALI_EXPERT_SYSTEM_PROMPT: "PROMPT",
@@ -91,9 +90,13 @@ vi.mock("@/lib/services/vector-store", () => ({
 import { POST } from "@/app/api/question/route";
 import { searchDocuments } from "@/lib/services/rag-pipeline";
 import { formatContext } from "@/lib/services/vector-store";
+import { streamText } from "ai";
+import { getConfiguredModel } from "@/lib/services/llm-provider";
 
 const mockedSearch = vi.mocked(searchDocuments);
 const mockedFormatContext = vi.mocked(formatContext);
+const mockedStreamText = vi.mocked(streamText);
+const mockedGetConfiguredModel = vi.mocked(getConfiguredModel);
 
 interface WriterMock {
   writes: Array<Record<string, unknown>>;
@@ -111,6 +114,65 @@ function makeReq(body: unknown): Request {
 }
 
 describe("POST /api/question", () => {
+  it("returns 400 without starting the model for malformed input", async () => {
+    const response = (await POST(
+      makeReq({ messages: "not-an-array" }),
+    )) as Response;
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid_request",
+      message: "Invalid request",
+    });
+    expect(mockedStreamText).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 without starting the model for oversized input", async () => {
+    const response = (await POST(
+      makeReq({
+        messages: [
+          {
+            id: "u",
+            role: "user",
+            parts: [{ type: "text", text: "x".repeat(4_001) }],
+          },
+        ],
+      }),
+    )) as Response;
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid_request",
+      message: "Invalid request",
+    });
+    expect(mockedStreamText).not.toHaveBeenCalled();
+  });
+
+  it("does not expose model configuration errors", async () => {
+    mockedGetConfiguredModel.mockImplementationOnce(() => {
+      throw new Error("OPENROUTER_API_KEY is missing");
+    });
+
+    const response = (await POST(
+      makeReq({
+        messages: [
+          {
+            id: "u",
+            role: "user",
+            parts: [{ type: "text", text: "question" }],
+          },
+        ],
+      }),
+    )) as Response;
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "internal_error",
+      message: "Internal server error",
+    });
+    expect(mockedStreamText).not.toHaveBeenCalled();
+  });
+
   describe("stopWhenAnswered", () => {
     it("stops at 5 steps or when answer text exceeds 150 chars", async () => {
       mockedSearch.mockResolvedValue({ matches: [], context: "" });
