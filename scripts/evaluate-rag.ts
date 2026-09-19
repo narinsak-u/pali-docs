@@ -40,8 +40,15 @@ function roundMilliseconds(value: number): number {
 
 function toEvaluationOutcome(
   result: AgentTurnResult,
+  citationSourceIds: readonly string[],
+  retrievedSourceIds: readonly string[],
 ): RagEvaluationRecord["actualOutcome"] {
-  return result.outcome === "answered" ? "grounded" : result.outcome;
+  if (result.outcome !== "answered") return result.outcome;
+  const acceptedEvidence = new Set(retrievedSourceIds);
+  return citationSourceIds.length > 0 &&
+    citationSourceIds.every((sourceId) => acceptedEvidence.has(sourceId))
+    ? "grounded"
+    : "unsupported-answer";
 }
 
 export async function runEvaluationCase({
@@ -101,18 +108,24 @@ export async function runEvaluationCase({
     result.outcome === "answered"
       ? result.citations.map(({ source }) => source)
       : [];
+  const observedSourceIds = retrievedSourceIds();
 
   return {
     caseId: evaluationCase.id,
+    category: evaluationCase.category,
     language: evaluationCase.language,
     runner: runnerName,
     corpusRevision,
     modelId,
     expectedOutcome: evaluationCase.expectedOutcome,
-    actualOutcome: toEvaluationOutcome(result),
+    actualOutcome: toEvaluationOutcome(
+      result,
+      citationSourceIds,
+      observedSourceIds,
+    ),
     expectedSourceIds: [...evaluationCase.expectedSourceIds],
     forbiddenSourceIds: [...(evaluationCase.forbiddenSourceIds ?? [])],
-    retrievedSourceIds: retrievedSourceIds(),
+    retrievedSourceIds: observedSourceIds,
     citationSourceIds,
     retrievalAttempts,
     latencyMs: {
