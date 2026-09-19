@@ -186,6 +186,35 @@ describe("createAiSdkAgentTurnRunner", () => {
     expect(terminalEvents(events)).toHaveLength(1);
   });
 
+  it("classifies a quota rejection from a model stage as insufficient_quota", async () => {
+    const dependencies = createDependencies({
+      decide: vi.fn(async () => {
+        throw new Error("429 provider quota detail");
+      }),
+    });
+    const { events, sink } = captureEvents();
+
+    const result = await createAiSdkAgentTurnRunner(dependencies).runTurn(
+      input,
+      sink,
+    );
+
+    expect(result).toEqual({
+      outcome: "failed",
+      code: "insufficient_quota",
+    });
+    expect(events).toEqual([
+      { type: "run.started", runId: "run-1" },
+      {
+        type: "run.failed",
+        runId: "run-1",
+        code: "insufficient_quota",
+      },
+    ]);
+    expect(terminalEvents(events)).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain("provider quota detail");
+  });
+
   it("retrieves once for a substantive question and returns only cited sources", async () => {
     const dependencies = createDependencies();
     const { events, sink } = captureEvents();

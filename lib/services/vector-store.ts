@@ -31,7 +31,9 @@ export async function queryPinecone(
       !metadata ||
       !isNonEmptyString(metadata.text) ||
       !isNonEmptyString(metadata.source) ||
-      !isNonEmptyString(metadata.title)
+      !isNonEmptyString(metadata.title) ||
+      !isNonEmptyString(metadata.corpusRevision) ||
+      metadata.corpusRevision !== config.PINECONE_CORPUS_REVISION
     ) {
       return [];
     }

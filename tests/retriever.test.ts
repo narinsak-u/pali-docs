@@ -87,6 +87,19 @@ describe("retrieve", () => {
     expect(mockedEmbed).toHaveBeenCalledWith("dhamma");
     expect(mockedQuery).toHaveBeenCalledWith([0.1, 0.2], 4, undefined);
   });
+  it("labels valid accepted passages with the configured corpus revision", async () => {
+    const matching = passage("matching", 0.9);
+    mockedQuery.mockResolvedValue([matching]);
+
+    const result = await retrieve({ query: "dhamma", attempt: 0 });
+
+    expect(result).toMatchObject({
+      status: "grounded",
+      corpusRevision: "corpus-2026-09-18",
+      passages: [matching],
+    });
+  });
+
 
   it("rejects candidates below minScore while accepting the boundary", async () => {
     mockedQuery.mockResolvedValue([
