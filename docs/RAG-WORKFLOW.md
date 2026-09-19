@@ -83,7 +83,7 @@ The implemented terminal outcomes are:
 
 ### Cancellation
 
-The request signal is threaded route → runner → model stages → retriever. The runner checks it between stages and forwards it to AI SDK model calls. Pinecone SDK v6.1 does not accept an `AbortSignal` for the vector query, so the retriever checks immediately before the paid query and again before continuing; an already in-flight Pinecone inference/query cannot be forcibly interrupted by this code. Cancellation emits a terminal failed outcome with code `aborted` and does not start later stages.
+The request signal is threaded route → runner → model stages → retriever. The runner checks it between stages and forwards it to AI SDK model calls. Pinecone SDK v6.1 does not accept an `AbortSignal` for the vector query, so the retriever checks immediately before starting that paid query; an already in-flight Pinecone inference/query cannot be forcibly interrupted by this code. If cancellation arrives while a successful Pinecone query is in flight, the retriever may still select passages and the runner may emit `retrieval.completed` before the runner observes cancellation at its next boundary check before generation. Once observed, cancellation emits a terminal failed outcome with code `aborted` and no later model stage starts.
 
 ## Events and streamed message parts
 
