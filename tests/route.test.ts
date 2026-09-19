@@ -8,6 +8,7 @@ interface TestStream {
 
 const mocked = vi.hoisted(() => ({
   createRunner: vi.fn(),
+  getModelConfig: vi.fn(),
   runTurn: vi.fn(),
 }));
 
@@ -15,27 +16,59 @@ vi.mock("@/lib/agent/ai-sdk-runner", () => ({
   createAiSdkAgentTurnRunner: mocked.createRunner,
 }));
 
+vi.mock("@/lib/config/model", () => ({
+  getModelConfig: mocked.getModelConfig,
+}));
+
 vi.mock("ai", () => ({
   createUIMessageStream: vi.fn(
-    ({ execute }: { execute: (options: { writer: { write(part: unknown): void } }) => Promise<void> }) => {
+    ({
+      execute,
+      onError,
+    }: {
+      execute: (options: {
+        writer: { write(part: unknown): void };
+      }) => Promise<void>;
+      onError?: (error: unknown) => string;
+    }) => {
       const writes: unknown[] = [];
-      const completion = execute({
-        writer: {
-          write(part: unknown) {
-            writes.push(part);
-          },
-        },
-      });
+      const completion = Promise.resolve()
+        .then(() =>
+          execute({
+            writer: {
+              write(part: unknown) {
+                writes.push(part);
+              },
+            },
+          }),
+        )
+        .catch((error: unknown) => {
+          writes.push({
+            type: "error",
+            errorText: onError?.(error) ?? "Internal server error",
+          });
+        });
       return { writes, completion } satisfies TestStream;
     },
   ),
   createUIMessageStreamResponse: vi.fn(
-    async ({ stream }: { stream: TestStream }) => {
-      await stream.completion;
-      return new Response(JSON.stringify(stream.writes), {
-        headers: { "Content-Type": "application/json" },
-      });
-    },
+    ({ stream }: { stream: TestStream }) =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            void stream.completion.then(
+              () => {
+                controller.enqueue(
+                  new TextEncoder().encode(JSON.stringify(stream.writes)),
+                );
+                controller.close();
+              },
+              (error: unknown) => controller.error(error),
+            );
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
   ),
 }));
 
@@ -122,6 +155,11 @@ beforeEach(() => {
   );
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.spyOn(console, "error").mockImplementation(() => undefined);
+  mocked.getModelConfig.mockReturnValue({
+    PROVIDER_NAME: "openrouter",
+    OPENROUTER_API_KEY: "configured",
+    OPENROUTER_LLM_MODEL: "configured-model",
+  });
 
   mocked.runTurn.mockImplementation(
     async (input: { runId: string }, sink: AgentEventSink) => {
@@ -255,7 +293,25 @@ describe("POST /api/question", () => {
     expect(mocked.runTurn).not.toHaveBeenCalled();
   });
 
-  it("returns 429 with a stable response for quota failures", async () => {
+  it("returns a generic 500 before committing the stream for invalid model configuration", async () => {
+    mocked.getModelConfig.mockImplementationOnce(() => {
+      throw new Error("OPENROUTER_API_KEY contains private configuration detail");
+    });
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: "internal_error",
+      message: "Internal server error",
+    });
+    expect(JSON.stringify(body)).not.toContain("private configuration detail");
+    expect(mocked.createRunner).not.toHaveBeenCalled();
+    expect(mocked.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("returns 429 only for quota failures known before stream commitment", async () => {
     mocked.createRunner.mockImplementationOnce(() => {
       throw new Error("429 quota rejected for secret provider account");
     });
@@ -269,6 +325,29 @@ describe("POST /api/question", () => {
       message: "You exceeded your current quota",
     });
     expect(JSON.stringify(body)).not.toContain("secret provider account");
+  });
+
+  it("returns the live response before an asynchronous quota failure and streams a validated terminal outcome", async () => {
+    const deferred = Promise.withResolvers<never>();
+    mocked.runTurn.mockReturnValueOnce(deferred.promise);
+
+    const response = await POST(makeRequest(validBody));
+    await vi.waitFor(() => expect(mocked.runTurn).toHaveBeenCalledTimes(1));
+
+    expect(response.status).toBe(200);
+    deferred.reject(new Error("429 private provider quota detail"));
+
+    const body = await response.json();
+    expect(body).toEqual([
+      {
+        type: "data-outcome",
+        data: { outcome: "failed", code: "insufficient_quota" },
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toContain("private provider quota detail");
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toContain(
+      "00000000-0000-4000-8000-000000000006",
+    );
   });
 
   it("returns a generic 500 and logs internal failures with the run ID", async () => {

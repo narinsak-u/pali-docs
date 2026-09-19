@@ -10,14 +10,31 @@ import { ProcessDetails } from "./process-details";
 import { ProcessStepsInline } from "./process-steps-inline";
 import {
   citationsPartSchema,
+  outcomePartSchema,
   reasoningPartSchema,
   suggestionsPartSchema,
   taskPartSchema,
   type CitationsPart,
+  type OutcomePart,
   type ReasoningPart,
   type SuggestionsPart,
 } from "@/lib/schemas/ai-data-parts";
 import { reduceTaskParts, type DataTaskPart } from "@/lib/chat/reduce-task-parts";
+
+function terminalOutcomeMessage(outcome: OutcomePart): string | null {
+  switch (outcome.outcome) {
+    case "insufficient-evidence":
+      return "ไม่พบหลักฐานเพียงพอในเอกสารเพื่อสร้างคำตอบ";
+    case "retrieval-unavailable":
+      return "ไม่สามารถค้นหาเอกสารได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง";
+    case "failed":
+      return outcome.code === "aborted"
+        ? null
+        : "เกิดข้อผิดพลาดในการสร้างคำตอบ กรุณาลองใหม่อีกครั้ง";
+    case "answered":
+      return null;
+  }
+}
 
 export function AIMessage({
   message,
@@ -47,6 +64,7 @@ export function AIMessage({
     data: CitationsPart;
   }> = [];
   const rawTaskParts: DataTaskPart[] = [];
+  let terminalOutcome: OutcomePart | null = null;
 
   for (const part of parts) {
     if (!("data" in part)) continue;
@@ -71,11 +89,17 @@ export function AIMessage({
       if (parsed.success) {
         citationParts.push({ type: "data-citations", data: parsed.data });
       }
+    } else if (part.type === "data-outcome") {
+      const parsed = outcomePartSchema.safeParse(part.data);
+      if (parsed.success) terminalOutcome = parsed.data;
     }
   }
 
   const taskPartsLatest = reduceTaskParts(rawTaskParts);
   const citations = citationParts.flatMap((part) => part.data.citations);
+  const terminalMessage = terminalOutcome
+    ? terminalOutcomeMessage(terminalOutcome)
+    : null;
 
   const processSteps: StepDescriptor[] = [
     ...reasoningParts.map((_, index) => ({
@@ -121,6 +145,14 @@ export function AIMessage({
       />
       {text && <ResponseStep text={text} isStreaming={false} />}
       <CitationList citations={citations} />
+      {terminalMessage && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100"
+        >
+          {terminalMessage}
+        </div>
+      )}
 
       {badgeLabel && (
         <ProcessBadge label={badgeLabel}>

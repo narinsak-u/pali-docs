@@ -6,6 +6,7 @@ import {
   createStructuredTraceSink,
 } from "@/lib/agent/structured-trace-sink";
 import type { AgentTurnRunner } from "@/lib/agent/types";
+import { getModelConfig } from "@/lib/config/model";
 import { isQuotaError } from "@/lib/services/quiz-pipeline";
 import {
   parseQuestionRequestBody,
@@ -39,6 +40,7 @@ export async function POST(req: Request): Promise<Response> {
   const runId = globalThis.crypto.randomUUID();
 
   try {
+    getModelConfig();
     const runner: AgentTurnRunner = createAiSdkAgentTurnRunner();
     const stream = createUIMessageStream({
       originalMessages: messages,
@@ -50,7 +52,17 @@ export async function POST(req: Request): Promise<Response> {
           }),
         ]);
 
-        await runner.runTurn({ runId, messages }, sink, req.signal);
+        try {
+          await runner.runTurn({ runId, messages }, sink, req.signal);
+        } catch (error: unknown) {
+          console.error("Question agent run error:", { runId, error });
+          const code = req.signal.aborted
+            ? "aborted"
+            : isQuotaError(error)
+              ? "insufficient_quota"
+              : "internal_error";
+          sink.emit({ type: "run.failed", runId, code });
+        }
       },
       onError: (error) => {
         console.error("Question agent stream error:", { runId, error });
