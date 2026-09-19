@@ -1,3 +1,4 @@
+import type { UIMessageChunk } from "ai";
 import type { AgentEvent, AgentEventSink } from "@/lib/agent/types";
 import {
   citationsPartSchema,
@@ -22,14 +23,25 @@ type AgentUiDataPart =
   | { type: "data-suggestions"; data: SuggestionsPart }
   | { type: "data-outcome"; data: OutcomePart };
 
+type AgentUiTextPart = Extract<
+  UIMessageChunk,
+  { type: "text-start" | "text-delta" | "text-end" }
+>;
+
+type AgentUiChunk = AgentUiDataPart | AgentUiTextPart;
+
 interface AgentUiWriter {
-  write(part: AgentUiDataPart): void;
+  write(part: AgentUiChunk): void;
 }
 
 const RETRIEVAL_LABEL = "ค้นหาเอกสาร";
 
 function retrievalTaskId(runId: string, attempt: number): string {
   return `${runId}:retrieval:${attempt}`;
+}
+
+function answerTextId(runId: string): string {
+  return `${runId}:answer`;
 }
 
 export function createAiSdkEventSink(writer: AgentUiWriter): AgentEventSink {
@@ -113,8 +125,13 @@ export function createAiSdkEventSink(writer: AgentUiWriter): AgentEventSink {
           data: statusPartSchema.parse({ phase: "answering" }),
         });
         break;
-      case "answer.completed":
+      case "answer.completed": {
+        const id = answerTextId(event.runId);
+        writer.write({ type: "text-start", id });
+        writer.write({ type: "text-delta", id, delta: event.text });
+        writer.write({ type: "text-end", id });
         break;
+      }
       case "citations.completed":
         writer.write({
           type: "data-citations",

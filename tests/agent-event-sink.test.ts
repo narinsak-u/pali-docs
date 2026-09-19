@@ -2,17 +2,17 @@ import { describe, expect, it } from "vitest";
 import { createAiSdkEventSink } from "@/lib/agent/ai-sdk-event-sink";
 import type { AgentEvent } from "@/lib/agent/types";
 
-interface WrittenPart {
-  type: string;
-  data: unknown;
-}
+type WrittenChunk =
+  | { type: string; data: unknown }
+  | { type: "text-start" | "text-end"; id: string }
+  | { type: "text-delta"; id: string; delta: string };
 
 function createWriter() {
-  const writes: WrittenPart[] = [];
+  const writes: WrittenChunk[] = [];
   return {
     writes,
     writer: {
-      write(part: WrittenPart) {
+      write(part: WrittenChunk) {
         writes.push(part);
       },
     },
@@ -20,7 +20,7 @@ function createWriter() {
 }
 
 describe("createAiSdkEventSink", () => {
-  it("maps a successful run to validated UI data parts in order", () => {
+  it("maps a successful run to validated UI chunks in order", () => {
     const { writer, writes } = createWriter();
     const sink = createAiSdkEventSink(writer);
     const events: AgentEvent[] = [
@@ -87,6 +87,9 @@ describe("createAiSdkEventSink", () => {
         data: { summary: "พบเอกสารที่เกี่ยวข้อง 2 รายการ" },
       },
       { type: "data-status", data: { phase: "answering" } },
+      { type: "text-start", id: "run-1:answer" },
+      { type: "text-delta", id: "run-1:answer", delta: "answer" },
+      { type: "text-end", id: "run-1:answer" },
       {
         type: "data-citations",
         data: {
