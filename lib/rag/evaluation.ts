@@ -1,12 +1,21 @@
 import { z } from "zod";
 
 export type RagExpectedOutcome = "grounded" | "insufficient-evidence";
+export type RagEvaluationCategory =
+  | "thai-single-source"
+  | "english-single-source"
+  | "multi-source"
+  | "paraphrase-terminology"
+  | "insufficient-evidence"
+  | "retrieved-prompt-injection";
 export type RagActualOutcome =
   | RagExpectedOutcome
   | "retrieval-unavailable"
+  | "unsupported-answer"
   | "failed";
 
 export interface RagEvaluationCase {
+  category: RagEvaluationCategory;
   id: string;
   language: "th" | "en";
   question: string;
@@ -23,6 +32,7 @@ export interface RagStageLatencies {
 
 export interface RagEvaluationRecord {
   caseId: string;
+  category: RagEvaluationCategory;
   language: RagEvaluationCase["language"];
   runner: string;
   corpusRevision: string;
@@ -65,6 +75,14 @@ export interface RagEvaluationBaseline {
 
 const evaluationCaseSchema = z
   .object({
+    category: z.enum([
+      "thai-single-source",
+      "english-single-source",
+      "multi-source",
+      "paraphrase-terminology",
+      "insufficient-evidence",
+      "retrieved-prompt-injection",
+    ]),
     id: z.string().min(1),
     language: z.enum(["th", "en"]),
     question: z.string().min(1),
@@ -106,6 +124,15 @@ export function parseEvaluationManifest(value: unknown): RagEvaluationManifest {
   return evaluationManifestSchema.parse(value);
 }
 
+const REQUIRED_CATEGORY_COUNTS: Record<RagEvaluationCategory, number> = {
+  "thai-single-source": 10,
+  "english-single-source": 5,
+  "multi-source": 5,
+  "paraphrase-terminology": 5,
+  "insufficient-evidence": 3,
+  "retrieved-prompt-injection": 2,
+};
+
 export function assertEvaluationManifestReady(
   manifest: RagEvaluationManifest,
 ): asserts manifest is ReadyRagEvaluationManifest {
@@ -116,12 +143,21 @@ export function assertEvaluationManifestReady(
     throw new Error("RAG evaluation manifest must contain at least 30 reviewed cases");
   }
 
+  const categoryCounts: Record<RagEvaluationCategory, number> = {
+    "thai-single-source": 0,
+    "english-single-source": 0,
+    "multi-source": 0,
+    "paraphrase-terminology": 0,
+    "insufficient-evidence": 0,
+    "retrieved-prompt-injection": 0,
+  };
   const caseIds = new Set<string>();
   for (const evaluationCase of manifest.cases) {
     if (caseIds.has(evaluationCase.id)) {
       throw new Error(`RAG evaluation case ID is duplicated: ${evaluationCase.id}`);
     }
     caseIds.add(evaluationCase.id);
+    categoryCounts[evaluationCase.category] += 1;
 
     if (
       evaluationCase.expectedOutcome === "grounded" &&
@@ -139,6 +175,66 @@ export function assertEvaluationManifestReady(
         `Insufficient-evidence case ${evaluationCase.id} cannot declare expected source IDs`,
       );
     }
+    if (
+      evaluationCase.category === "thai-single-source" &&
+      (evaluationCase.language !== "th" ||
+        evaluationCase.expectedOutcome !== "grounded" ||
+        evaluationCase.expectedSourceIds.length !== 1)
+    ) {
+      throw new Error(
+        `Evaluation case ${evaluationCase.id} does not match thai-single-source`,
+      );
+    }
+    if (
+      evaluationCase.category === "english-single-source" &&
+      (evaluationCase.language !== "en" ||
+        evaluationCase.expectedOutcome !== "grounded" ||
+        evaluationCase.expectedSourceIds.length !== 1)
+    ) {
+      throw new Error(
+        `Evaluation case ${evaluationCase.id} does not match english-single-source`,
+      );
+    }
+    if (
+      evaluationCase.category === "multi-source" &&
+      (evaluationCase.expectedOutcome !== "grounded" ||
+        evaluationCase.expectedSourceIds.length < 2)
+    ) {
+      throw new Error(`Evaluation case ${evaluationCase.id} does not match multi-source`);
+    }
+    if (
+      (evaluationCase.category === "paraphrase-terminology" ||
+        evaluationCase.category === "retrieved-prompt-injection") &&
+      (evaluationCase.expectedOutcome !== "grounded" ||
+        evaluationCase.expectedSourceIds.length === 0)
+    ) {
+      throw new Error(
+        `Evaluation case ${evaluationCase.id} does not match ${evaluationCase.category}`,
+      );
+    }
+    if (
+      evaluationCase.category === "insufficient-evidence" &&
+      evaluationCase.expectedOutcome !== "insufficient-evidence"
+    ) {
+      throw new Error(
+        `Evaluation case ${evaluationCase.id} does not match insufficient-evidence`,
+      );
+    }
+  }
+
+  const missingCohorts = Object.entries(REQUIRED_CATEGORY_COUNTS)
+    .filter(
+      ([category, required]) =>
+        categoryCounts[category as RagEvaluationCategory] < required,
+    )
+    .map(
+      ([category, required]) =>
+        `${category} ${categoryCounts[category as RagEvaluationCategory]}/${required}`,
+    );
+  if (missingCohorts.length > 0) {
+    throw new Error(
+      `RAG evaluation manifest is missing required cohorts: ${missingCohorts.join(", ")}`,
+    );
   }
 }
 
@@ -290,6 +386,11 @@ export function evaluateGates(
   }
 
   for (const record of records) {
+    if (record.actualOutcome === "unsupported-answer") {
+      violations.push(
+        `case ${record.caseId} returned an answer without accepted citations`,
+      );
+    }
     if (record.retrievalAttempts > 2) {
       violations.push(
         `case ${record.caseId} exceeded two retrieval attempts (${record.retrievalAttempts})`,

@@ -20,6 +20,7 @@ function record(
 ): RagEvaluationRecord {
   return {
     caseId: "case-1",
+    category: "multi-source",
     language: "en",
     runner: "ai-sdk",
     corpusRevision: "corpus-1",
@@ -191,6 +192,7 @@ describe("RAG evaluation manifest safeguards", () => {
       cases: [
         {
           id: "insufficient-1",
+          category: "insufficient-evidence",
           language: "en",
           question: "What is tomorrow's weather?",
           expectedOutcome: "insufficient-evidence",
@@ -215,6 +217,27 @@ describe("RAG evaluation manifest safeguards", () => {
 
     expect(() => assertEvaluationManifestReady(manifest)).toThrow(
       "RAG evaluation manifest must contain at least 30 reviewed cases",
+    );
+  });
+
+  it("rejects 30 reviewed cases that omit required evaluation cohorts", () => {
+    const manifest = parseEvaluationManifest({
+      schemaVersion: 1,
+      status: "ready",
+      corpusRevision: "corpus-1",
+      baseline: { outcomeAccuracy: 0.9 },
+      cases: Array.from({ length: 30 }, (_, index) => ({
+        id: `insufficient-${index}`,
+        category: "insufficient-evidence",
+        language: "en",
+        question: `Out-of-corpus question ${index}`,
+        expectedOutcome: "insufficient-evidence",
+        expectedSourceIds: [],
+      })),
+    });
+
+    expect(() => assertEvaluationManifestReady(manifest)).toThrow(
+      "RAG evaluation manifest is missing required cohorts: thai-single-source 0/10, english-single-source 0/5, multi-source 0/5, paraphrase-terminology 0/5, retrieved-prompt-injection 0/2",
     );
   });
 });
@@ -256,6 +279,7 @@ describe("RAG evaluation records", () => {
     const evaluationRecord = await runEvaluationCase({
       evaluationCase: {
         id: "case-safe-record",
+        category: "english-single-source",
         language: "en",
         question: "private user prompt",
         expectedOutcome: "grounded",
@@ -306,6 +330,7 @@ describe("RAG evaluation records", () => {
     const evaluationRecord = await runEvaluationCase({
       evaluationCase: {
         id: "case-unavailable",
+        category: "english-single-source",
         language: "en",
         question: "private user prompt",
         expectedOutcome: "grounded",
@@ -324,5 +349,47 @@ describe("RAG evaluation records", () => {
       retrievalAttempts: 1,
       latencyMs: { total: 100, retrieval: 90, generation: 0 },
     });
+  });
+
+  it("fails closed when the runner answers without accepted citations", async () => {
+    const runner: AgentTurnRunner = {
+      async runTurn() {
+        return {
+          outcome: "answered",
+          answer: "uncited direct answer",
+          citations: [],
+          suggestions: [],
+        };
+      },
+    };
+    const ticks = [0, 10];
+
+    const evaluationRecord = await runEvaluationCase({
+      evaluationCase: {
+        id: "case-direct-answer",
+        category: "english-single-source",
+        language: "en",
+        question: "A corpus-grounded question",
+        expectedOutcome: "grounded",
+        expectedSourceIds: ["source-a"],
+      },
+      runner,
+      runnerName: "ai-sdk",
+      corpusRevision: "corpus-1",
+      modelId: "model-1",
+      retrievedSourceIds: () => [],
+      now: () => ticks.shift() ?? 10,
+    });
+
+    expect(evaluationRecord.actualOutcome).toBe("unsupported-answer");
+    expect(
+      evaluateGates(
+        [evaluationRecord],
+        aggregateEvaluation([evaluationRecord]),
+        { outcomeAccuracy: 0 },
+      ),
+    ).toContain(
+      "case case-direct-answer returned an answer without accepted citations",
+    );
   });
 });
