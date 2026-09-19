@@ -7,6 +7,7 @@ import {
 } from "@/lib/agent/structured-trace-sink";
 import type { AgentTurnRunner } from "@/lib/agent/types";
 import { getModelConfig } from "@/lib/config/model";
+import { getRagConfig } from "@/lib/config/rag";
 import { isQuotaError } from "@/lib/services/quiz-pipeline";
 import {
   parseQuestionRequestBody,
@@ -41,6 +42,7 @@ export async function POST(req: Request): Promise<Response> {
 
   try {
     getModelConfig();
+    getRagConfig();
     const runner: AgentTurnRunner = createAiSdkAgentTurnRunner();
     const stream = createUIMessageStream({
       originalMessages: messages,

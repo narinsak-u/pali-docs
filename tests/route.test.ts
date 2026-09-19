@@ -9,6 +9,7 @@ interface TestStream {
 const mocked = vi.hoisted(() => ({
   createRunner: vi.fn(),
   getModelConfig: vi.fn(),
+  getRagConfig: vi.fn(),
   runTurn: vi.fn(),
 }));
 
@@ -18,6 +19,10 @@ vi.mock("@/lib/agent/ai-sdk-runner", () => ({
 
 vi.mock("@/lib/config/model", () => ({
   getModelConfig: mocked.getModelConfig,
+}));
+
+vi.mock("@/lib/config/rag", () => ({
+  getRagConfig: mocked.getRagConfig,
 }));
 
 vi.mock("ai", () => ({
@@ -159,6 +164,16 @@ beforeEach(() => {
     PROVIDER_NAME: "openrouter",
     OPENROUTER_API_KEY: "configured",
     OPENROUTER_LLM_MODEL: "configured-model",
+  });
+  mocked.getRagConfig.mockReturnValue({
+    PINECONE_API_KEY: "configured",
+    PINECONE_INDEX_NAME: "configured-index",
+    PINECONE_NAMESPACE: "",
+    PINECONE_CORPUS_REVISION: "corpus-2026-09-18",
+    RAG_CANDIDATE_TOP_K: 20,
+    RAG_ACCEPTED_TOP_K: 8,
+    RAG_MIN_SCORE: 0,
+    RAG_MAX_CONTEXT_CHARS: 12_000,
   });
 
   mocked.runTurn.mockImplementation(
@@ -307,6 +322,24 @@ describe("POST /api/question", () => {
       message: "Internal server error",
     });
     expect(JSON.stringify(body)).not.toContain("private configuration detail");
+    expect(mocked.createRunner).not.toHaveBeenCalled();
+    expect(mocked.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("returns a generic 500 before committing the stream for invalid RAG configuration", async () => {
+    mocked.getRagConfig.mockImplementationOnce(() => {
+      throw new Error("PINECONE_CORPUS_REVISION contains private config detail");
+    });
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: "internal_error",
+      message: "Internal server error",
+    });
+    expect(JSON.stringify(body)).not.toContain("private config detail");
     expect(mocked.createRunner).not.toHaveBeenCalled();
     expect(mocked.runTurn).not.toHaveBeenCalled();
   });
