@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEventSink, AgentTurnRunner } from "@/lib/agent/types";
+import type * as AiSdkRunnerModule from "@/lib/agent/ai-sdk-runner";
 
 interface TestStream {
   writes: unknown[];
@@ -381,6 +382,31 @@ describe("POST /api/question", () => {
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toContain(
       "00000000-0000-4000-8000-000000000006",
     );
+  });
+  it("streams a terminal quota outcome from an injected model-stage rejection", async () => {
+    const actualRunner = await vi.importActual<typeof AiSdkRunnerModule>(
+      "@/lib/agent/ai-sdk-runner",
+    );
+    mocked.createRunner.mockReturnValueOnce(
+      actualRunner.createAiSdkAgentTurnRunner({
+        decide: vi.fn(async () => {
+          throw new Error("429 private model-stage quota detail");
+        }),
+      }),
+    );
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual([
+      { type: "data-status", data: { phase: "thinking" } },
+      {
+        type: "data-outcome",
+        data: { outcome: "failed", code: "insufficient_quota" },
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toContain("private model-stage quota detail");
   });
 
   it("returns a generic 500 and logs internal failures with the run ID", async () => {

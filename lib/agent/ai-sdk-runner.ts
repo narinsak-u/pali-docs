@@ -18,6 +18,7 @@ import type {
   AgentTurnResult,
   AgentTurnRunner,
 } from "@/lib/agent/types";
+import { isQuotaError } from "@/lib/services/quiz-pipeline";
 import { getConfiguredModel } from "@/lib/services/llm-provider";
 
 const retrievalDecisionSchema = z.object({
@@ -464,7 +465,11 @@ export function createAiSdkAgentTurnRunner(
           suggestions,
         );
       } catch (error: unknown) {
-        const code = isAbort(error, signal) ? "aborted" : "runner_error";
+        const code = isAbort(error, signal)
+          ? "aborted"
+          : isQuotaError(error)
+            ? "insufficient_quota"
+            : "runner_error";
         sink.emit({ type: "run.failed", runId: input.runId, code });
         return { outcome: "failed", code };
       }
