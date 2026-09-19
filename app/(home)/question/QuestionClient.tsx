@@ -25,6 +25,7 @@ export function QuestionClient() {
     regenerate,
     stop,
     clear,
+    dismissError,
   } = useAIChat();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -96,9 +97,9 @@ export function QuestionClient() {
         <div className="max-w-4xl mx-auto mb-3 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 dark:bg-red-950 dark:border-red-800 dark:text-red-300 text-sm flex items-center justify-between">
           <span>{error}</span>
           <button
-            onClick={() => {
-              /* error clears on next send */
-            }}
+            type="button"
+            onClick={dismissError}
+            aria-label="ปิดข้อความข้อผิดพลาด"
             className="ml-2 text-red-500 hover:text-red-700 dark:hover:text-red-300"
           >
             <X className="size-3" />
