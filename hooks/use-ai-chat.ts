@@ -1,8 +1,16 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { useChat } from "@ai-sdk/react";
+import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
+import {
+  reduceTaskParts,
+  type DataTaskPart,
+} from "@/lib/chat/reduce-task-parts";
+import {
+  statusPartSchema,
+  taskPartSchema,
+} from "@/lib/schemas/ai-data-parts";
 
 export type ChatPhase =
   | "idle"
@@ -11,15 +19,18 @@ export type ChatPhase =
   | "answering"
   | "done";
 
+type ChatHelpers = UseChatHelpers<UIMessage>;
+
 export interface UseAIChatReturn {
-  messages: ReturnType<typeof useChat>["messages"];
-  status: ReturnType<typeof useChat>["status"];
+  messages: ChatHelpers["messages"];
+  status: ChatHelpers["status"];
   phase: ChatPhase;
   error: string | null;
-  sendMessage: ReturnType<typeof useChat>["sendMessage"];
-  regenerate: ReturnType<typeof useChat>["regenerate"];
-  stop: ReturnType<typeof useChat>["stop"];
+  sendMessage: ChatHelpers["sendMessage"];
+  regenerate: ChatHelpers["regenerate"];
+  stop: ChatHelpers["stop"];
   clear: () => void;
+  dismissError: () => void;
 }
 
 function mapErrorToThai(err: Error): string {
@@ -41,26 +52,29 @@ function derivePhase(messages: UIMessage[], chatStatus: string): ChatPhase {
       : "idle";
   }
 
-  // Ground truth: ready = done, input is enabled
   if (chatStatus !== "streaming") return "done";
 
-  // Still streaming — determine phase from parts
   const parts = Array.isArray(last.parts) ? last.parts : [];
+  const taskParts: DataTaskPart[] = [];
+  let statusPhase: "thinking" | "searching" | "answering" | null = null;
 
-  let hasRunningTask = false;
-  let statusPhase: string | null = null;
+  for (const part of parts) {
+    if (!("data" in part)) continue;
 
-  for (const p of parts) {
-    if (p.type === "data-task") {
-      if ((p as { data: { status: string } }).data?.status === "running") {
-        hasRunningTask = true;
+    if (part.type === "data-task") {
+      const parsed = taskPartSchema.safeParse(part.data);
+      if (parsed.success) {
+        taskParts.push({ type: "data-task", data: parsed.data });
       }
-    }
-    if (p.type === "data-status") {
-      statusPhase = (p as { data: { phase: string } }).data?.phase ?? null;
+    } else if (part.type === "data-status") {
+      const parsed = statusPartSchema.safeParse(part.data);
+      if (parsed.success) statusPhase = parsed.data.phase;
     }
   }
 
+  const hasRunningTask = reduceTaskParts(taskParts).some(
+    (part) => part.data.status === "running",
+  );
   if (hasRunningTask) return "searching";
   if (statusPhase === "answering") return "answering";
 
@@ -75,7 +89,25 @@ export function useAIChat(): UseAIChatReturn {
       onError: (err) => setError(mapErrorToThai(err)),
     });
 
-  const clear = useCallback(() => setMessages([]), [setMessages]);
+  const sendMessageWithErrorReset = useCallback<typeof sendMessage>(
+    (...args) => {
+      setError(null);
+      return sendMessage(...args);
+    },
+    [sendMessage],
+  );
+  const regenerateWithErrorReset = useCallback<typeof regenerate>(
+    (...args) => {
+      setError(null);
+      return regenerate(...args);
+    },
+    [regenerate],
+  );
+  const clear = useCallback(() => {
+    setError(null);
+    setMessages([]);
+  }, [setMessages]);
+  const dismissError = useCallback(() => setError(null), []);
 
   const phase = useMemo(
     () => derivePhase(messages, status),
@@ -87,10 +119,11 @@ export function useAIChat(): UseAIChatReturn {
     status,
     phase,
     error,
-    sendMessage,
-    regenerate,
+    sendMessage: sendMessageWithErrorReset,
+    regenerate: regenerateWithErrorReset,
     stop,
     clear,
+    dismissError,
   };
 }
 

@@ -2,12 +2,18 @@
 
 import type { UIMessage } from "ai";
 import type { StepDescriptor } from "./step-descriptor";
+import { CitationList } from "./citation-list";
 import { ResponseStep } from "./response-step";
 import { SuggestionStep } from "./suggestion-step";
 import { ProcessBadge } from "./process-badge";
 import { ProcessDetails } from "./process-details";
 import { ProcessStepsInline } from "./process-steps-inline";
 import {
+  citationsPartSchema,
+  reasoningPartSchema,
+  suggestionsPartSchema,
+  taskPartSchema,
+  type CitationsPart,
   type ReasoningPart,
   type SuggestionsPart,
 } from "@/lib/schemas/ai-data-parts";
@@ -24,38 +30,65 @@ export function AIMessage({
 }) {
   const parts = Array.isArray(message.parts) ? message.parts : [];
   const text = parts
-    .filter((p): p is { type: "text"; text: string } => p.type === "text")
-    .map((p) => p.text)
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text)
     .join("");
 
-  const reasoningParts: Array<{ type: "data-reasoning"; data: ReasoningPart }> = [];
-  const suggestionParts: Array<{ type: "data-suggestions"; data: SuggestionsPart }> = [];
+  const reasoningParts: Array<{
+    type: "data-reasoning";
+    data: ReasoningPart;
+  }> = [];
+  const suggestionParts: Array<{
+    type: "data-suggestions";
+    data: SuggestionsPart;
+  }> = [];
+  const citationParts: Array<{
+    type: "data-citations";
+    data: CitationsPart;
+  }> = [];
   const rawTaskParts: DataTaskPart[] = [];
 
-  for (const p of parts) {
-    if (p.type === "data-reasoning") {
-      reasoningParts.push(p as { type: "data-reasoning"; data: ReasoningPart });
-    } else if (p.type === "data-task") {
-      rawTaskParts.push(p as DataTaskPart);
-    } else if (p.type === "data-suggestions") {
-      suggestionParts.push(p as { type: "data-suggestions"; data: SuggestionsPart });
+  for (const part of parts) {
+    if (!("data" in part)) continue;
+
+    if (part.type === "data-reasoning") {
+      const parsed = reasoningPartSchema.safeParse(part.data);
+      if (parsed.success) {
+        reasoningParts.push({ type: "data-reasoning", data: parsed.data });
+      }
+    } else if (part.type === "data-task") {
+      const parsed = taskPartSchema.safeParse(part.data);
+      if (parsed.success) {
+        rawTaskParts.push({ type: "data-task", data: parsed.data });
+      }
+    } else if (part.type === "data-suggestions") {
+      const parsed = suggestionsPartSchema.safeParse(part.data);
+      if (parsed.success) {
+        suggestionParts.push({ type: "data-suggestions", data: parsed.data });
+      }
+    } else if (part.type === "data-citations") {
+      const parsed = citationsPartSchema.safeParse(part.data);
+      if (parsed.success) {
+        citationParts.push({ type: "data-citations", data: parsed.data });
+      }
     }
   }
 
-  const taskPartsLatest: DataTaskPart[] = reduceTaskParts(rawTaskParts);
+  const taskPartsLatest = reduceTaskParts(rawTaskParts);
+  const citations = citationParts.flatMap((part) => part.data.citations);
 
   const processSteps: StepDescriptor[] = [
-    ...reasoningParts.map((_, i) => ({
-      id: `reasoning-${i}`,
+    ...reasoningParts.map((_, index) => ({
+      id: `reasoning-${index}`,
       kind: "reasoning" as const,
       status: "done" as const,
       label: "Reasoning",
     })),
-    ...taskPartsLatest.map((t) => ({
-      id: t.data.id ? `task-${t.data.id}` : `task-${t.data.label}`,
+    ...taskPartsLatest.map((task) => ({
+      id: task.data.id ? `task-${task.data.id}` : `task-${task.data.label}`,
       kind: "task" as const,
-      status: t.data.status,
-      label: t.data.label,
+      status: task.data.status,
+      label: task.data.label,
     })),
   ];
 
@@ -68,7 +101,7 @@ export function AIMessage({
         taskPartsLatest.length === 0));
 
   const totalMatches = taskPartsLatest.reduce(
-    (sum, t) => sum + (t.data.matchCount ?? 0),
+    (sum, task) => sum + (task.data.matchCount ?? 0),
     0,
   );
   const hasProcess = processSteps.length > 0;
@@ -87,24 +120,26 @@ export function AIMessage({
         isDone={isDone}
       />
       {text && <ResponseStep text={text} isStreaming={false} />}
+      <CitationList citations={citations} />
 
       {badgeLabel && (
         <ProcessBadge label={badgeLabel}>
           <ProcessDetails
             steps={processSteps}
-            reasoning={reasoningParts.map((p) => p.data)}
-            tasks={taskPartsLatest.map((t) => t.data)}
+            reasoning={reasoningParts.map((part) => part.data)}
+            tasks={taskPartsLatest.map((task) => task.data)}
           />
         </ProcessBadge>
       )}
 
-      {!consumedSuggestionMsgIds?.has(message.id) && suggestionParts.map((p, i) => (
-        <SuggestionStep
-          key={`s-${i}`}
-          suggestions={p.data.suggestions}
-          onSelect={onSelectSuggestion}
-        />
-      ))}
+      {!consumedSuggestionMsgIds?.has(message.id) &&
+        suggestionParts.map((part, index) => (
+          <SuggestionStep
+            key={`s-${index}`}
+            suggestions={part.data.suggestions}
+            onSelect={onSelectSuggestion}
+          />
+        ))}
     </div>
   );
 }
