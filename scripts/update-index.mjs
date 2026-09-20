@@ -4,7 +4,7 @@ import { algoliasearch } from "algoliasearch";
 import { sync } from "fumadocs-core/search/algolia";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import fetch from "node-fetch"; // If using Node < 18, install via `npm install node-fetch`
+import fetch from "node-fetch";
 
 const appId = process.env.NEXT_PUBLIC_ALGOLIA_APP_ID || '';
 const apiKey = process.env.ALGOLIA_ADMIN_API_KEY || ''; // must be admin key

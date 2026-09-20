@@ -8,14 +8,14 @@ Next.js 15 documentation site for Pali language learning (App Router, TypeScript
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start development server with Turbopack |
-| `npm run build` | Build for production (runs `next build` then updates index) |
-| `npm run start` | Start production server |
-| `npm test` | Run all tests in watch mode |
-| `npm run test:run` | Run all tests once |
-| `npm run index` | Run the search index update script |
-| `npm run postinstall` | Auto-runs fumadocs-mdx after npm install |
-**Single test:** `npx vitest run tests/get-stats.test.ts`
+| `bun run dev` | Start development server with Turbopack |
+| `bun run build` | Build for production (runs `next build` then updates index) |
+| `bun run start` | Start production server |
+| `bun test` | Run all tests in watch mode |
+| `bun run test:run` | Run all tests once |
+| `bun run index` | Run the search index update script |
+| `bun run postinstall` | Run the Fumadocs generation script |
+**Single test:** `bunx vitest run tests/get-stats.test.ts`
 
 **Type checking:** Run `next build` (no ESLint, Prettier, or standalone type-check script is configured).
 
@@ -158,3 +158,21 @@ Project-specific skills in `.agents/skills/`:
 - **fumadocs-content** - MDX content management, frontmatter, source config
 - **quiz-engine** - Quiz state management, timer, pagination, results
 - **search-indexing** - Algolia/Pinecone indexing pipeline, search API
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in GitHub Issues; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context domain documentation uses root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+
+### Stacked work
+
+For large, multi-part jobs, create the stack before editing and use `gh stack add <branch>` for each dependent review layer. Keep one concern per layer; follow `skill://gh-stack` for stack setup and synchronization.
+
+### Commit messages
+
+Use `<emoji> <type>(<task>/<domain>): <message>` for every commit. Example: `✨ feat(quiz/flow): add timer state`. Keep the message imperative and focused.

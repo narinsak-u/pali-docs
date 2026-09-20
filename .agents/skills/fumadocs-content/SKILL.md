@@ -53,7 +53,7 @@ weight: 1
 1. Create `.source/<section>/<page>.mdx`
 2. Add frontmatter with title, description, indexing
 3. Use existing MDX components (see `mdx-components.tsx`)
-4. Run `npm run dev` to verify
+4. Run `bun run dev` to verify
 
 ### Referencing Content in Components
 
