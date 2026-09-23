@@ -158,21 +158,27 @@ describe("FastAPI runner", () => {
   it("sends the shared turn and forwards parsed SSE events into an answered result", async () => {
     const events = [
       envelope("run-1", 0, "run.started", { runId: "run-1" }),
-      envelope("run-1", 1, "answer.completed", {
+      envelope("run-1", 1, "retrieval.completed", {
+        runId: "run-1",
+        attempt: 1,
+        matchCount: 1,
+        acceptedSourceIds: ["source-a"],
+      }),
+      envelope("run-1", 2, "answer.completed", {
         runId: "run-1",
         text: "Pali is an ancient language.",
       }),
-      envelope("run-1", 2, "citations.completed", {
+      envelope("run-1", 3, "citations.completed", {
         runId: "run-1",
         citations: [
-          { id: "citation-1", source: "source-a", title: "A source", section: null },
+          { id: "citation-1", source: "citation-only", title: "A source", section: null },
         ],
       }),
-      envelope("run-1", 3, "suggestions.completed", {
+      envelope("run-1", 4, "suggestions.completed", {
         runId: "run-1",
         suggestions: ["Tell me more"],
       }),
-      envelope("run-1", 4, "run.completed", {
+      envelope("run-1", 5, "run.completed", {
         runId: "run-1",
         outcome: "answered",
       }),
@@ -185,6 +191,7 @@ describe("FastAPI runner", () => {
       });
       expect(JSON.parse(String(request.body))).toEqual({
         runId: "run-1",
+        corpusRevision: "corpus-1",
         messages: [{ role: "user", content: "What is Pali?" }],
       });
       return streamResponse(events);
@@ -193,6 +200,7 @@ describe("FastAPI runner", () => {
     const runner = createFastApiRunner({
       baseUrl: "https://api.example///",
       internalToken: "secret",
+      corpusRevision: "corpus-1",
       fetchImpl,
     });
 
@@ -200,11 +208,12 @@ describe("FastAPI runner", () => {
       outcome: "answered",
       answer: "Pali is an ancient language.",
       citations: [
-        { id: "citation-1", source: "source-a", title: "A source" },
+        { id: "citation-1", source: "citation-only", title: "A source" },
       ],
       suggestions: ["Tell me more"],
     });
-    expect(sink.emit).toHaveBeenCalledTimes(5);
+    expect(sink.emit).toHaveBeenCalledTimes(6);
+    expect(runner.getRetrievedSourceIds()).toEqual(["source-a"]);
   });
 
   it.each([
@@ -218,6 +227,7 @@ describe("FastAPI runner", () => {
     const runner = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      corpusRevision: "corpus-1",
       fetchImpl: vi.fn(async () => response),
     });
     await expect(runner.runTurn(input, { emit: vi.fn() })).rejects.toThrow(message);
@@ -227,6 +237,7 @@ describe("FastAPI runner", () => {
     const malformed = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      corpusRevision: "corpus-1",
       fetchImpl: vi.fn(async () => streamResponse("data: not-json\n\n")),
     });
     await expect(malformed.runTurn(input, { emit: vi.fn() })).rejects.toThrow(
@@ -236,6 +247,7 @@ describe("FastAPI runner", () => {
     const unterminated = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      corpusRevision: "corpus-1",
       fetchImpl: vi.fn(async () =>
         streamResponse(envelope("run-1", 0, "run.started", { runId: "run-1" })),
       ),
@@ -249,6 +261,7 @@ describe("FastAPI runner", () => {
     const wrongRunId = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      corpusRevision: "corpus-1",
       fetchImpl: vi.fn(async () =>
         streamResponse(envelope("other-run", 0, "run.started", { runId: "other-run" })),
       ),
@@ -260,6 +273,7 @@ describe("FastAPI runner", () => {
     const missingBody = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      corpusRevision: "corpus-1",
       fetchImpl: vi.fn(
         async () =>
           new Response(null, {
@@ -277,6 +291,7 @@ describe("FastAPI runner", () => {
     const runner = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      corpusRevision: "corpus-1",
       fetchImpl: vi.fn(async () =>
         streamResponse(
           [

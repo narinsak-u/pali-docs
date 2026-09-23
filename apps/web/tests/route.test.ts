@@ -302,7 +302,7 @@ describe("POST /api/question", () => {
           "Content-Type": "application/json",
           Authorization: "Bearer backend-token",
         },
-        signal: request.signal,
+        signal: expect.any(AbortSignal),
       }),
     );
     const fetchOptions = fetchMock.mock.calls[0]?.[1];
@@ -369,6 +369,45 @@ describe("POST /api/question", () => {
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toContain(
       "00000000-0000-4000-8000-000000000006",
     );
+  });
+
+  it("falls back to AI SDK when the bounded FastAPI request times out", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const timeoutController = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    const request = makeRequest(validBody);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (_input, init) => {
+        expect(init?.signal).not.toBe(request.signal);
+        timeoutController.abort(new DOMException("Timed out", "TimeoutError"));
+        throw new DOMException("Timed out", "TimeoutError");
+      },
+    );
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocked.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back when the caller aborts the FastAPI request", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const controller = new AbortController();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("caller cancelled"));
+    controller.abort();
+
+    await expect(POST(makeRequest(validBody, controller.signal))).rejects.toThrow(
+      "caller cancelled",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocked.runTurn).not.toHaveBeenCalled();
   });
 
   it("falls back to AI SDK for a non-OK LangGraph response", async () => {

@@ -21,6 +21,8 @@ export const maxDuration = 120;
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
+const FASTAPI_REQUEST_TIMEOUT_MS = 15_000;
+
 function errorResponse(
   status: number,
   error: string,
@@ -104,8 +106,11 @@ export async function POST(req: Request): Promise<Response> {
       });
       return createAiSdkResponse(messages, runId, req);
     }
-
     let backendResponse: Response;
+    const backendSignal = AbortSignal.any([
+      req.signal,
+      AbortSignal.timeout(FASTAPI_REQUEST_TIMEOUT_MS),
+    ]);
     try {
       backendResponse = await fetch(`${baseUrl}/v1/question`, {
         method: "POST",
@@ -120,14 +125,16 @@ export async function POST(req: Request): Promise<Response> {
             return content.trim().length > 0 ? [{ role, content }] : [];
           }),
         }),
-        signal: req.signal,
+        signal: backendSignal,
       });
     } catch (error: unknown) {
+      if (req.signal.aborted) throw error;
       console.error("LangGraph question fallback:", { runId, error });
       return createAiSdkResponse(messages, runId, req);
     }
 
     if (!backendResponse.ok) {
+      if (req.signal.aborted) req.signal.throwIfAborted();
       console.error("LangGraph question fallback:", {
         runId,
         reason: "backend_status",
@@ -142,6 +149,7 @@ export async function POST(req: Request): Promise<Response> {
         ?.toLowerCase()
         .startsWith("text/event-stream")
     ) {
+      if (req.signal.aborted) req.signal.throwIfAborted();
       console.error("LangGraph question fallback:", {
         runId,
         reason: "invalid_content_type",

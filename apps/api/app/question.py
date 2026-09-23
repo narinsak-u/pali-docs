@@ -43,6 +43,9 @@ class QuestionRequest(BaseModel):
 
     run_id: str | None = Field(default=None, min_length=1, max_length=200, alias="runId")
     thread_id: str | None = Field(default=None, min_length=1, max_length=200, alias="threadId")
+    corpus_revision: str | None = Field(
+        default=None, min_length=1, max_length=200, alias="corpusRevision"
+    )
     messages: list[QuestionMessage] = Field(min_length=1, max_length=MAX_MESSAGES)
 
     @model_validator(mode="after")
@@ -163,6 +166,11 @@ async def question(
 
     try:
         settings: Settings = get_settings()
+        if (
+            payload.corpus_revision is not None
+            and payload.corpus_revision != settings.PINECONE_CORPUS_REVISION
+        ):
+            raise _internal_error(400, "invalid_request", "Invalid request")
         runner = create_langgraph_agent_turn_runner(settings=settings)
     except (ValidationError, ValueError, OSError, RuntimeError):
         raise _internal_error(503, "service_unavailable", "Question service unavailable")

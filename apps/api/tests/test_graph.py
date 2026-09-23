@@ -219,3 +219,9 @@ async def test_valid_citations_answer_and_emit_monotonic_v1_envelopes() -> None:
     assert all(envelope["runId"] == "run-valid" for envelope in envelopes)
     assert [envelope["sequence"] for envelope in envelopes] == list(range(len(envelopes)))
     assert any(envelope["eventType"] == "citations.completed" for envelope in envelopes)
+    retrieval_completed = next(
+        envelope
+        for envelope in envelopes
+        if envelope["eventType"] == "retrieval.completed"
+    )
+    assert retrieval_completed["payload"]["acceptedSourceIds"] == ["book-1"]

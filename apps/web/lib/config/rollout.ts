@@ -22,7 +22,8 @@ export function getRolloutConfig(env: NodeJS.ProcessEnv = process.env): RolloutC
   return {
     backend,
     trafficPercent: parseTrafficPercent(env.RAG_LANGGRAPH_TRAFFIC_PERCENT),
-    rolloutEnabled: explicitBackend !== "ai-sdk",
+    rolloutEnabled:
+      explicitBackend === undefined || explicitBackend === "langgraph",
   };
 }
 

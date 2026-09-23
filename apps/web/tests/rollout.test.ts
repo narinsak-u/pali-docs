@@ -39,13 +39,23 @@ describe("getRolloutConfig", () => {
     expect(getRolloutConfig({ RAG_LANGGRAPH_TRAFFIC_PERCENT: "100" }).trafficPercent).toBe(100);
   });
 
-  it("falls back to AI SDK for an unknown backend", () => {
-    expect(getRolloutConfig({ RAG_BACKEND: "custom" })).toEqual({
-      backend: "ai-sdk",
-      trafficPercent: 0,
-      rolloutEnabled: true,
-    });
-  });
+  it.each(["custom", "", "LangGraph", "AI-SDK"])(
+    "disables rollout for an explicit unknown backend %j",
+    (backend) => {
+      expect(getRolloutConfig({
+        RAG_BACKEND: backend,
+        RAG_LANGGRAPH_TRAFFIC_PERCENT: "100",
+      })).toEqual({
+        backend: "ai-sdk",
+        trafficPercent: 100,
+        rolloutEnabled: false,
+      });
+      expect(selectRagBackend("run-1", getRolloutConfig({
+        RAG_BACKEND: backend,
+        RAG_LANGGRAPH_TRAFFIC_PERCENT: "100",
+      }))).toBe("ai-sdk");
+    },
+  );
 });
 
 describe("selectRagBackend", () => {

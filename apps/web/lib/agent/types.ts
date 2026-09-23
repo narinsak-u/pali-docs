@@ -37,8 +37,8 @@ export type AgentEvent =
       runId: string;
       attempt: number;
       matchCount: number;
+      acceptedSourceIds?: string[];
     }
-  | { type: "retrieval.failed"; runId: string; code: string }
   | {
       type: "query.rewritten";
       runId: string;

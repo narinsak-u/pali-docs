@@ -314,6 +314,11 @@ async def retrieve_node(state: AgentGraphState, config: object) -> dict[str, obj
         }
 
     match_count = len(bundle.passages) if bundle.status == "grounded" else 0
+    accepted_source_ids = (
+        [passage.source for passage in bundle.passages]
+        if bundle.status == "grounded"
+        else []
+    )
     return {
         "retrieval_attempt": attempt,
         "grounding": bundle,
@@ -324,6 +329,7 @@ async def retrieve_node(state: AgentGraphState, config: object) -> dict[str, obj
                 "retrieval.completed",
                 attempt=attempt,
                 matchCount=match_count,
+                acceptedSourceIds=accepted_source_ids,
             ),
         ],
     }

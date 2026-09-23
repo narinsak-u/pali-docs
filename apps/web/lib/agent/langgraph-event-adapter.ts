@@ -33,7 +33,12 @@ const retrievalStartedPayloadSchema = z
   .object({ runId: z.string().min(1), attempt: z.number().int().positive(), query: z.string().min(1) })
   .strict();
 const retrievalCompletedPayloadSchema = z
-  .object({ runId: z.string().min(1), attempt: z.number().int().positive(), matchCount: z.number().int().nonnegative() })
+  .object({
+    runId: z.string().min(1),
+    attempt: z.number().int().positive(),
+    matchCount: z.number().int().nonnegative(),
+    acceptedSourceIds: z.array(z.string().min(1)).optional(),
+  })
   .strict();
 const codePayloadSchema = z.object({ runId: z.string().min(1), code: z.string().min(1) }).strict();
 const rewrittenPayloadSchema = z
@@ -89,7 +94,15 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
     }
     case "retrieval.completed": {
       const payload = requireRunId(retrievalCompletedPayloadSchema.parse(envelope.payload));
-      return { type: envelope.eventType, runId: envelope.runId, attempt: payload.attempt, matchCount: payload.matchCount };
+      return {
+        type: envelope.eventType,
+        runId: envelope.runId,
+        attempt: payload.attempt,
+        matchCount: payload.matchCount,
+        ...(payload.acceptedSourceIds === undefined
+          ? {}
+          : { acceptedSourceIds: payload.acceptedSourceIds }),
+      };
     }
     case "retrieval.failed": {
       const payload = requireRunId(codePayloadSchema.parse(envelope.payload));

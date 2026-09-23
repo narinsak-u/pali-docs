@@ -99,12 +99,15 @@ function messageContent(message: SafeQuestionRequest["messages"][number]): strin
 export function createFastApiRunner(options: {
   baseUrl: string;
   internalToken: string;
+  corpusRevision: string;
   fetchImpl?: typeof fetch;
-}): AgentTurnRunner {
+}): FastApiRunner {
   const baseUrl = options.baseUrl.trim().replace(/\/+$/, "");
   const internalToken = options.internalToken.trim();
+  const corpusRevision = options.corpusRevision.trim();
   if (!baseUrl) throw new Error("FastAPI base URL is required");
   if (!internalToken) throw new Error("FastAPI internal token is required");
+  if (!corpusRevision) throw new Error("FastAPI corpus revision is required");
 
   let retrievedSourceIds: string[] = [];
 
@@ -126,6 +129,7 @@ export function createFastApiRunner(options: {
         },
         body: JSON.stringify({
           runId: input.runId,
+          corpusRevision,
           messages: input.messages.map((message) => ({
             role: message.role,
             content: messageContent(message),
@@ -154,13 +158,15 @@ export function createFastApiRunner(options: {
         emit(event: AgentEvent): void {
           sink.emit(event);
           if (event.type === "answer.completed") answer = event.text;
-          if (event.type === "citations.completed") {
-            citations = event.citations;
-            for (const citation of citations) {
-              if (!retrievedSourceIds.includes(citation.source)) {
-                retrievedSourceIds.push(citation.source);
+          if (event.type === "retrieval.completed") {
+            for (const sourceId of event.acceptedSourceIds ?? []) {
+              if (!retrievedSourceIds.includes(sourceId)) {
+                retrievedSourceIds.push(sourceId);
               }
             }
+          }
+          if (event.type === "citations.completed") {
+            citations = event.citations;
           }
           if (event.type === "suggestions.completed") {
             suggestions = event.suggestions;
@@ -240,7 +246,11 @@ export async function main(): Promise<void> {
       }
     }
   });
-  const langGraphRunner = createFastApiRunner({ baseUrl, internalToken }) as FastApiRunner;
+  const langGraphRunner = createFastApiRunner({
+    baseUrl,
+    internalToken,
+    corpusRevision: manifest.corpusRevision,
+  });
   const timestamp = new Date().toISOString().replaceAll(":", "-");
   const outputDirectory = resolve(
     projectRoot,
