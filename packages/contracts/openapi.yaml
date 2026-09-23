@@ -1,0 +1,97 @@
+openapi: 3.1.0
+info:
+  title: Pali Docs API
+  version: 0.1.0
+  description: >-
+    The health endpoint is currently served by apps/api. The versioned run
+    request and event schemas describe the future BFF-to-API boundary; no run
+    endpoint is served by this Phase 1 service.
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Report API service health
+      responses:
+        '200':
+          description: Service is available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+      properties:
+        status:
+          type: string
+          const: ok
+        service:
+          type: string
+          const: api
+    RunRequest:
+      description: Future versioned request boundary; not currently served.
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - runId
+        - threadId
+        - messages
+        - clientRequestId
+      properties:
+        schemaVersion:
+          type: string
+          pattern: '^v[0-9]+$'
+        runId:
+          type: string
+          minLength: 1
+        threadId:
+          type: string
+          minLength: 1
+        messages:
+          type: array
+          items: {}
+        clientRequestId:
+          type: string
+          minLength: 1
+    EventEnvelope:
+      description: Future framework-neutral event boundary; not currently served.
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - runId
+        - eventId
+        - sequence
+        - eventType
+        - timestamp
+        - payload
+      properties:
+        schemaVersion:
+          type: string
+          pattern: '^v[0-9]+$'
+        runId:
+          type: string
+          minLength: 1
+        eventId:
+          type: string
+          minLength: 1
+        sequence:
+          type: integer
+          minimum: 0
+        eventType:
+          type: string
+          minLength: 1
+        timestamp:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true
