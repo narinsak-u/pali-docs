@@ -3,17 +3,23 @@ import { getRolloutConfig, selectRagBackend } from "@/lib/config/rollout";
 
 describe("getRolloutConfig", () => {
   it("defaults to AI SDK with no rollout traffic", () => {
-    expect(getRolloutConfig({})).toEqual({ backend: "ai-sdk", trafficPercent: 0 });
+    expect(getRolloutConfig({})).toEqual({
+      backend: "ai-sdk",
+      trafficPercent: 0,
+      rolloutEnabled: true,
+    });
   });
 
   it("accepts explicit backend modes", () => {
     expect(getRolloutConfig({ RAG_BACKEND: "langgraph" })).toEqual({
       backend: "langgraph",
       trafficPercent: 0,
+      rolloutEnabled: true,
     });
     expect(getRolloutConfig({ RAG_BACKEND: "ai-sdk" })).toEqual({
       backend: "ai-sdk",
       trafficPercent: 0,
+      rolloutEnabled: false,
     });
   });
 
@@ -23,6 +29,7 @@ describe("getRolloutConfig", () => {
       expect(getRolloutConfig({ RAG_LANGGRAPH_TRAFFIC_PERCENT: trafficPercent })).toEqual({
         backend: "ai-sdk",
         trafficPercent: 0,
+        rolloutEnabled: true,
       });
     },
   );
@@ -36,6 +43,7 @@ describe("getRolloutConfig", () => {
     expect(getRolloutConfig({ RAG_BACKEND: "custom" })).toEqual({
       backend: "ai-sdk",
       trafficPercent: 0,
+      rolloutEnabled: true,
     });
   });
 });
@@ -47,18 +55,32 @@ describe("selectRagBackend", () => {
     );
   });
 
+  it("honors an explicit AI SDK backend even at one hundred percent", () => {
+    expect(selectRagBackend("run-1", { backend: "ai-sdk", trafficPercent: 100 })).toBe("ai-sdk");
+  });
+
   it("keeps all traffic on AI SDK at zero percent", () => {
-    expect(selectRagBackend("run-1", { backend: "ai-sdk", trafficPercent: 0 })).toBe("ai-sdk");
+    expect(
+      selectRagBackend("run-1", {
+        backend: "ai-sdk",
+        trafficPercent: 0,
+        rolloutEnabled: true,
+      }),
+    ).toBe("ai-sdk");
   });
 
   it("sends all traffic to LangGraph at one hundred percent", () => {
-    expect(selectRagBackend("run-1", { backend: "ai-sdk", trafficPercent: 100 })).toBe(
-      "langgraph",
-    );
+    expect(
+      selectRagBackend("run-1", {
+        backend: "ai-sdk",
+        trafficPercent: 100,
+        rolloutEnabled: true,
+      }),
+    ).toBe("langgraph");
   });
 
   it("assigns the same run ID consistently", () => {
-    const config = { backend: "ai-sdk" as const, trafficPercent: 50 };
+    const config = { backend: "ai-sdk" as const, trafficPercent: 50, rolloutEnabled: true };
     expect(selectRagBackend("stable-run", config)).toBe(selectRagBackend("stable-run", config));
   });
 });

@@ -3,6 +3,7 @@ export type RagBackend = "ai-sdk" | "langgraph";
 export interface RolloutConfig {
   backend: RagBackend;
   trafficPercent: number;
+  rolloutEnabled?: boolean;
 }
 
 function parseTrafficPercent(value: string | undefined): number {
@@ -15,11 +16,13 @@ function parseTrafficPercent(value: string | undefined): number {
 }
 
 export function getRolloutConfig(env: NodeJS.ProcessEnv = process.env): RolloutConfig {
-  const backend = env.RAG_BACKEND === "langgraph" ? "langgraph" : "ai-sdk";
+  const explicitBackend = env.RAG_BACKEND;
+  const backend = explicitBackend === "langgraph" ? "langgraph" : "ai-sdk";
 
   return {
     backend,
     trafficPercent: parseTrafficPercent(env.RAG_LANGGRAPH_TRAFFIC_PERCENT),
+    rolloutEnabled: explicitBackend !== "ai-sdk",
   };
 }
 
@@ -36,6 +39,7 @@ function hashRunId(runId: string): number {
 
 export function selectRagBackend(runId: string, config: RolloutConfig): RagBackend {
   if (config.backend === "langgraph") return "langgraph";
+  if (config.rolloutEnabled !== true) return "ai-sdk";
   if (config.trafficPercent <= 0) return "ai-sdk";
   if (config.trafficPercent >= 100) return "langgraph";
 
