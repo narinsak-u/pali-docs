@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEventSink, AgentTurnRunner } from "@/lib/agent/types";
 import type * as AiSdkRunnerModule from "@/lib/agent/ai-sdk-runner";
 
@@ -110,6 +110,36 @@ function makeRequest(body: unknown, signal?: AbortSignal): Request {
   });
 }
 
+function makeLangGraphResponse(
+  events: Array<{
+    eventType: string;
+    payload: Record<string, unknown>;
+  }>,
+  status = 200,
+  contentType = "text/event-stream",
+): Response {
+  const runId = "00000000-0000-4000-8000-000000000006";
+  const body = events
+    .map(
+      ({ eventType, payload }, sequence) =>
+        `data: ${JSON.stringify({
+          schemaVersion: "v1",
+          runId,
+          eventId: `event-${sequence}`,
+          sequence,
+          eventType,
+          timestamp: "2026-09-23T00:00:00.000Z",
+          payload,
+        })}\n\n`,
+    )
+    .join("");
+
+  return new Response(body, {
+    status,
+    headers: { "content-type": contentType },
+  });
+}
+
 function emitSuccessfulTurn(
   input: { runId: string },
   sink: AgentEventSink,
@@ -156,6 +186,9 @@ function emitSuccessfulTurn(
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
+  vi.stubEnv("RAG_BACKEND", "ai-sdk");
+  vi.stubEnv("RAG_LANGGRAPH_TRAFFIC_PERCENT", "100");
   vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
     "00000000-0000-4000-8000-000000000006",
   );
@@ -193,6 +226,10 @@ beforeEach(() => {
   } satisfies AgentTurnRunner);
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("POST /api/question", () => {
   it("runs one agent turn with sanitized messages and the request abort signal", async () => {
     const controller = new AbortController();
@@ -222,6 +259,167 @@ describe("POST /api/question", () => {
       expect.any(Object),
       request.signal,
     );
+  });
+  it("routes explicit LangGraph traffic through the backend SSE stream", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", " https://fastapi.example.test/// ");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", " backend-token ");
+    const request = makeRequest(validBody);
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        makeLangGraphResponse([
+          {
+            eventType: "run.started",
+            payload: { runId: "00000000-0000-4000-8000-000000000006" },
+          },
+          {
+            eventType: "answer.completed",
+            payload: {
+              runId: "00000000-0000-4000-8000-000000000006",
+              text: "BACKEND ANSWER",
+            },
+          },
+          {
+            eventType: "run.completed",
+            payload: {
+              runId: "00000000-0000-4000-8000-000000000006",
+              outcome: "answered",
+            },
+          },
+        ]),
+      );
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mocked.createRunner).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://fastapi.example.test/v1/question",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer backend-token",
+        },
+        signal: request.signal,
+      }),
+    );
+    const fetchOptions = fetchMock.mock.calls[0]?.[1];
+    expect(JSON.parse(String(fetchOptions?.body))).toEqual({
+      runId: "00000000-0000-4000-8000-000000000006",
+      messages: [
+        { role: "assistant", content: "Earlier safe answer" },
+        { role: "user", content: "What is dhamma?" },
+      ],
+    });
+    expect(JSON.stringify(await response.json())).toContain("BACKEND ANSWER");
+  });
+
+  it("keeps the explicit AI SDK override at one hundred percent LangGraph traffic", async () => {
+    vi.stubEnv("RAG_BACKEND", "ai-sdk");
+    vi.stubEnv("RAG_LANGGRAPH_TRAFFIC_PERCENT", "100");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocked.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let request JSON select the backend", async () => {
+    vi.stubEnv("RAG_BACKEND", "ai-sdk");
+    vi.stubEnv("RAG_LANGGRAPH_TRAFFIC_PERCENT", "100");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const response = await POST(
+      makeRequest({ ...validBody, backend: "langgraph" }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocked.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to AI SDK when LangGraph configuration is missing", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocked.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to AI SDK when the LangGraph request is rejected", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("private backend failure"));
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocked.runTurn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toContain(
+      "00000000-0000-4000-8000-000000000006",
+    );
+  });
+
+  it("falls back to AI SDK for a non-OK LangGraph response", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(makeLangGraphResponse([], 503));
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocked.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to AI SDK for a non-SSE LangGraph response", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(makeLangGraphResponse([], 200, "application/json"));
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocked.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry with AI SDK after LangGraph stream creation", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("data: {not-json}\\n\\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([
+      { type: "error", errorText: "Internal server error" },
+    ]);
+    expect(mocked.createRunner).not.toHaveBeenCalled();
+    expect(mocked.runTurn).not.toHaveBeenCalled();
   });
 
   it("streams runner events as ordered UI message parts through the public response", async () => {
