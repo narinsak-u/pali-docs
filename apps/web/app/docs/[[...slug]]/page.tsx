@@ -39,7 +39,7 @@ export default async function Page(props: {
         owner: siteMetadata.github.owner,
         repo: siteMetadata.github.repo,
         sha: siteMetadata.github.branch,
-        path: `content/docs/${page.path}`,
+        path: `apps/web/content/docs/${page.path}`,
       }}
       // article={{
       //   className: "max-sm:pb-16",
@@ -54,7 +54,7 @@ export default async function Page(props: {
         <LLMCopyButton markdownUrl={`${page.url}.mdx`} />
         <ViewOptions
           markdownUrl={`${page.url}.mdx`}
-          githubUrl={`https://github.com/${siteMetadata.github.owner}/${siteMetadata.github.repo}/blob/dev/apps/docs/content/docs/${page.path}`}
+          githubUrl={`https://github.com/${siteMetadata.github.owner}/${siteMetadata.github.repo}/blob/dev/apps/web/content/docs/${page.path}`}
         />
       </div>
 

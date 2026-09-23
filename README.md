@@ -178,7 +178,7 @@ Quiz appears with timer, pagination, and results
 | **OpenRouter** or **OpenCode** | Chat and quiz model calls | Selected provider's API key and model ID |
 | **Algolia** | Documentation full-text search | Application ID, public search key, and server-only admin key |
 
-`PROVIDER_NAME` accepts `openrouter` or `opencode` and defaults to `openrouter` only when it is absent. The selected provider's API key and model ID are required; model IDs have no built-in defaults. Copy `.env.example` to `.env.local` for the complete variable list and exact retrieval defaults.
+`PROVIDER_NAME` accepts `openrouter` or `opencode` and defaults to `openrouter` only when it is absent. The selected provider's API key and model ID are required; model IDs have no built-in defaults. Copy `.env.example` to `apps/web/.env.local` for the complete variable list and exact retrieval defaults.
 
 ### 2️⃣ Pinecone ingestion contract
 
@@ -198,7 +198,7 @@ Before enabling the two-attempt retrieval flow for unrestricted production traff
 ### 3️⃣ Environment
 
 ```bash
-cp .env.example .env.local
+cp .env.example apps/web/.env.local
 ```
 
 The RAG route validates model and Pinecone configuration before committing its stream. Required RAG values are `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, and `PINECONE_CORPUS_REVISION`; `PINECONE_NAMESPACE` defaults to the default namespace. Retrieval policy defaults are documented in `.env.example` and `docs/RAG-WORKFLOW.md`.

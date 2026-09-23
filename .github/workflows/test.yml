@@ -15,4 +15,4 @@ jobs:
         with:
           bun-version: "1.4.0"
       - run: bun install --frozen-lockfile
-      - run: bun run test:run
+      - run: cd apps/web && bun run test:run

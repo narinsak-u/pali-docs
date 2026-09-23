@@ -1,4 +1,5 @@
 import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
+import { consumeLangGraphSse } from "@/lib/agent/langgraph-event-adapter";
 import { createAiSdkEventSink } from "@/lib/agent/ai-sdk-event-sink";
 import { createAiSdkAgentTurnRunner } from "@/lib/agent/ai-sdk-runner";
 import {
@@ -30,6 +31,19 @@ function errorResponse(
   });
 }
 
+function backendErrorResponse(status: number): Response {
+  if (status === 400) {
+    return errorResponse(400, "invalid_request", "Invalid request");
+  }
+  if (status === 429) {
+    return errorResponse(429, "insufficient_quota", "You exceeded your current quota");
+  }
+  if (status === 503) {
+    return errorResponse(503, "service_unavailable", "Question service unavailable");
+  }
+  return errorResponse(500, "internal_error", "Internal server error");
+}
+
 export async function POST(req: Request): Promise<Response> {
   let messages: SafeQuestionRequest["messages"];
   try {
@@ -39,6 +53,77 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const runId = globalThis.crypto.randomUUID();
+
+  if (process.env.RAG_BACKEND === "langgraph") {
+    const baseUrl = process.env.FASTAPI_BASE_URL?.trim().replace(/\/+$/, "");
+    const internalToken = process.env.FASTAPI_INTERNAL_TOKEN?.trim();
+    if (!baseUrl || !internalToken) {
+      return errorResponse(
+        503,
+        "service_unavailable",
+        "Question service unavailable",
+      );
+    }
+
+    let backendResponse: Response;
+    try {
+      backendResponse = await fetch(`${baseUrl}/v1/question`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${internalToken}`,
+        },
+        body: JSON.stringify({
+          runId,
+          messages: messages.flatMap(({ role, parts }) => {
+            const content = parts.map((part) => part.text).join("");
+            return content.trim().length > 0 ? [{ role, content }] : [];
+          }),
+        }),
+        signal: req.signal,
+      });
+    } catch (error: unknown) {
+      console.error("LangGraph question request error:", { runId, error });
+      return errorResponse(
+        503,
+        "service_unavailable",
+        "Question service unavailable",
+      );
+    }
+
+    if (!backendResponse.ok) {
+      return backendErrorResponse(backendResponse.status);
+    }
+    if (
+      !backendResponse.headers
+        .get("content-type")
+        ?.toLowerCase()
+        .startsWith("text/event-stream")
+    ) {
+      return errorResponse(
+        503,
+        "service_unavailable",
+        "Question service unavailable",
+      );
+    }
+
+    const stream = createUIMessageStream({
+      originalMessages: messages,
+      execute: async ({ writer }) => {
+        await consumeLangGraphSse(
+          backendResponse,
+          createAiSdkEventSink(writer),
+          req.signal,
+          runId,
+        );
+      },
+      onError: (error) => {
+        console.error("LangGraph question stream error:", { runId, error });
+        return "Internal server error";
+      },
+    });
+    return createUIMessageStreamResponse({ stream }) as Response;
+  }
 
   try {
     getModelConfig();
