@@ -23,7 +23,9 @@ Tests       11 passed (11)
 
 ## Commit
 
-`28c1890` — `📊 feat(evaluation/compare): add paired runner comparison`
+`8210bb6` — `📊 feat(evaluation/compare): add paired runner comparison`
+
+The report originally recorded the pre-report commit `28c1890`; the commit was amended to include this required report, producing `8210bb6`. This docs-only correction records the final HEAD.
 
 ## Concerns
 
