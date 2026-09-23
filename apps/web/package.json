@@ -12,7 +12,8 @@
     "index": "node ./scripts/update-index.mjs",
     "test": "vitest",
     "test:run": "vitest run",
-    "eval:rag": "node --import tsx scripts/evaluate-rag.ts"
+    "eval:rag": "node --import tsx scripts/evaluate-rag.ts",
+    "compare:rag": "node --import tsx scripts/compare-rag.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^2.0.6",
