@@ -185,11 +185,36 @@ Configuration is parsed by `lib/config/model.ts` and `lib/config/rag.ts`. Missin
 | `RAG_MIN_SCORE` | Number 0–1; default `0`. |
 | `RAG_MAX_CONTEXT_CHARS` | Integer 1,000–50,000; default `12000`. |
 
+
+## Safe rollout and rollback
+
+The route selects the backend per request using these environment controls:
+
+| Control | Operational meaning |
+| --- | --- |
+| `RAG_BACKEND=ai-sdk` | Explicit safe rollback. Every request uses the known-good AI SDK path, regardless of the traffic percentage. |
+| `RAG_BACKEND=langgraph` | Explicit preview mode. Every request attempts the FastAPI/LangGraph backend; use only for controlled preview traffic while the comparison and live gates remain incomplete. |
+| `RAG_BACKEND` absent | Uses `RAG_LANGGRAPH_TRAFFIC_PERCENT`. The server creates a request ID and assigns each request deterministically to AI SDK or LangGraph from that ID. |
+| `RAG_LANGGRAPH_TRAFFIC_PERCENT` | Integer percentage from `0` through `100` used only when `RAG_BACKEND` is absent. Missing or invalid values fail closed to `0`, so requests use AI SDK. |
+
+LangGraph backend calls require both `FASTAPI_BASE_URL` and `FASTAPI_INTERNAL_TOKEN`. Before any backend SSE bytes are consumed, missing configuration, a request error, a non-success status, or a non-SSE response falls back to AI SDK for that request. After the LangGraph stream has started, stream failures are surfaced as stream errors and are not retried through AI SDK; this prevents duplicate model calls and inconsistent answers. To roll back, set `RAG_BACKEND=ai-sdk` and redeploy or restart the affected service. To preview, set `RAG_BACKEND=langgraph` only in the isolated preview environment, verify the backend credentials, and remove the override before percentage-based rollout.
+
 ## Pinecone ingestion and rollout prerequisite
 
 This repository owns the query-time application path, not the production Pinecone ingestion pipeline. To produce citation-safe retrieval, the external ingestion owner must publish a complete index build whose chunks have nonempty `text`, stable authoritative `source`, human-readable `title`, optional `section`, and metadata `corpusRevision` matching one immutable `PINECONE_CORPUS_REVISION`. Indexed passages must use Pinecone `inputType: "passage"` while this runtime uses `inputType: "query"` for searches, and the evaluation owner needs the authoritative source-ID mapping.
 
 The application can reject records with missing or mismatched metadata, but it cannot repair externally ingested records or invent source IDs. The repository does not contain ingestion code, a production-index inspection, or an application check that proves the external index used `inputType: "passage"`; those rollout facts must be verified outside this query path. Any traffic rollout also needs an abuse budget and distributed rate limit appropriate for the two-attempt retrieval policy.
+
+### Paired rollout comparison
+
+Run the paired AI SDK/LangGraph comparison through the root command:
+
+```bash
+just compare-rag
+```
+
+This command fails closed before runner creation or network calls until `data/rag-eval-cases.json` has an authoritative corpus revision, an outcome-accuracy baseline, and the reviewed evaluation cases required by the readiness gate. The checked-in manifest is intentionally incomplete, so a nonzero result from `just compare-rag` is expected at present. Do not fabricate corpus revisions, baselines, source IDs, or reviewed cases to make the comparison pass.
+
 
 ## Evaluation gate
 

@@ -29,6 +29,9 @@ build:
 eval:
     if [ -d apps/web ]; then cd apps/web; else cd .; fi; bun run eval:rag
 
+compare-rag:
+    cd apps/web && bun run compare:rag
+
 dev-api:
     cd apps/api && uv run uvicorn app.main:app --reload
 
