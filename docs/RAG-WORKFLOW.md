@@ -2,7 +2,7 @@
 
 ## Scope
 
-`POST /api/question` is the streaming chat endpoint for the current AI SDK agent foundation. This document describes the implemented route, runner, retriever, event, UI, configuration, cancellation, and evaluation contracts. LangGraph orchestration and response caching are not implemented here.
+`POST /api/question` is the streaming chat endpoint. This document describes the implemented TypeScript runner, optional FastAPI/LangGraph backend, retriever, event, UI, configuration, cancellation, rollout, and evaluation contracts. Live LangGraph promotion remains gated by the evaluation baseline and controlled-traffic window.
 
 ## Framework responsibilities
 
@@ -11,11 +11,11 @@ The application keeps framework concerns behind stable, framework-neutral bounda
 | Boundary | Responsibility |
 | --- | --- |
 | `Retriever` | Owns query embedding, Pinecone search, metadata/revision filtering, ranking, context budgeting, provenance, and citation construction. |
-| `@langchain/core` | May provide low-level model, message, and tool primitives or integrations. LangChain does not own the application workflow, and the first comparison does not use `createAgent`. |
-| Future `LangGraphAgentTurnRunner` | Owns future orchestration state, nodes, and conditional edges for decide, retrieve, grade, rewrite, generate, validate, repair, suggestions, and the terminal outcome. It implements the same `AgentTurnRunner` contract as the current production AI SDK runner. |
-| `AgentEventSink` | Adapts framework-neutral runner events for UI and trace consumers. The route owns HTTP setup, streaming, and cancellation. |
+| `@langchain/core` | May provide low-level model, message, and tool primitives or integrations. LangChain does not own the application workflow. |
+| `LangGraphAgentTurnRunner` | Owns the FastAPI/LangGraph orchestration path and exposes only the shared event/result contract through the BFF. |
+| `AgentEventSink` | Adapts framework-neutral events for UI and trace consumers. The route owns HTTP setup, streaming, rollout selection, fallback, and cancellation. |
 
-LangGraph is a future comparison runner, not part of the current production path. LangGraph types and messages must not escape the runner; the route and UI receive only the shared `AgentTurnRunner`, `AgentEventSink`, and result contracts. The comparison runner reuses the `Retriever` rather than owning Pinecone directly.
+LangGraph is available behind the controlled BFF rollout, not as a hard cutover. LangGraph types and messages must not escape the runner; the route and UI receive only the shared `AgentTurnRunner`, `AgentEventSink`, and result contracts. The comparison runner reuses the retriever for the TypeScript path and consumes accepted source IDs from the FastAPI event contract.
 
 ## Runtime boundaries
 
@@ -25,28 +25,20 @@ QuestionClient → useAIChat (DefaultChatTransport)
   ▼
 Route: app/api/question/route.ts
   ├─ read and validate the bounded raw request body
-  ├─ preflight model and RAG configuration
-  ├─ create the AI SDK stream and composite event sinks
-  └─ pass req.signal to AgentTurnRunner
+  ├─ select AI SDK or FastAPI/LangGraph by server-owned rollout policy
+  ├─ fall back to AI SDK before backend SSE bytes are consumed
+  └─ pass cancellation to the selected runner/stream
+         │
+         ├─ AI SDK: lib/agent/ai-sdk-runner.ts
+         │    └─ direct answer or bounded retrieve → draft → cite → suggest
+         │
+         └─ FastAPI: /v1/question → LangGraph runner
+              └─ versioned SSE events → Next.js event adapter
          │
          ▼
-Runner: lib/agent/ai-sdk-runner.ts
-  ├─ classify the latest turn for corpus retrieval
-  ├─ answer chat-only requests directly
-  └─ retrieve (at most two attempts), draft, validate citations, and suggest
-         │
-         ▼
-Retriever: lib/rag/retriever.ts
-  ├─ embed the query and query Pinecone
-  ├─ validate metadata and scores
-  ├─ rank, deduplicate, and apply count/context bounds
-  └─ return grounded | insufficient-evidence | unavailable
-         │
-         ▼
-AI SDK event sink → streamed UI message parts
-  ├─ status/task/reasoning progress
-  ├─ answer text, citations, and suggestions
-  └─ one terminal outcome
+Retriever and event contracts
+  ├─ validate revision, metadata, scores, accepted evidence, and citations
+  └─ stream one terminal outcome to the UI
 ```
 
 ## Data flow
@@ -64,7 +56,7 @@ Browser text
 ```
 
 1. `QuestionClient` sends text through `useAIChat` and `DefaultChatTransport` as the conversation's UI messages. `parseQuestionRequestBody()` reads the raw body, enforces the 256 KiB body limit, retains only text parts, bounds messages/parts/text, and requires the final retained message to be a nonblank user message. Non-text client parts and messages with no retained text are not carried into the safe request.
-2. `route.ts` preflights model/RAG configuration, then passes the safe messages and request signal to `createAiSdkAgentTurnRunner().runTurn()`. The runner's structured decision model chooses the direct chat path or produces a bounded retrieval query; direct chat does not query the corpus.
+2. `route.ts` selects the AI SDK or FastAPI/LangGraph backend using server-owned rollout configuration. Backend setup, timeout, non-OK, and non-SSE failures fall back to the AI SDK before stream consumption; post-stream failures are not retried.
 3. For retrieval, `retrieve()` trims the query, `generateQueryEmbedding()` creates a Pinecone `llama-text-embed-v2` query vector, and `queryPinecone()` returns metadata-bearing matches. The vector-store boundary drops records with missing identity/text/source/title/revision or a mismatched corpus revision, and normalizes invalid scores to `0`.
 4. The retriever ranks and deduplicates candidates, applies score/count/context bounds without cutting passage text, XML-escapes accepted metadata and text, and returns a grounding envelope plus citations derived from those accepted passages. The runner gives the grounded answer model only that accepted evidence and citation allow-list; invalid or unknown citation IDs are not accepted, with at most one repair attempt.
 5. Runner events are projected by `createAiSdkEventSink()` into schema-validated `data-status`, `data-task`, `data-reasoning`, `text-*`, `data-citations`, `data-suggestions`, and terminal `data-outcome` parts. The structured trace sink carries lifecycle metadata only: raw prompts, questions, rewritten query text, passage bodies, answers, and suggestions are intentionally not carried into traces.
@@ -79,9 +71,9 @@ The stream carries status and bounded summaries for progress, not a token-by-tok
 
 - `parseQuestionRequestBody()` reads the request as bytes and rejects bodies larger than 256 KiB, including chunked bodies that exceed the limit without a usable `Content-Length`.
 - `parseQuestionRequest()` accepts 1–20 user/assistant messages, at most 20 parts per message, at most 4,000 characters per text part, and at most 20,000 text characters in total. Non-text parts are discarded; messages with no retained text parts are removed. The final retained message must be a user message with nonblank text.
-- `getModelConfig()` and `getRagConfig()` run before the UI stream is created. A direct greeting therefore still requires valid route-wide model and RAG configuration.
-- The route creates an `AgentTurnRunner`, `createAiSdkEventSink(writer)`, and `createStructuredTraceSink(...)`, combines them with `createCompositeEventSink(...)`, and passes `req.signal` to `runner.runTurn(...)`. The route runtime is Node.js and `maxDuration` is 120 seconds.
-- Invalid request bodies return HTTP 400 (`invalid_request`). Setup failures return HTTP 429 for quota errors or HTTP 500 (`internal_error`) without exposing configuration details. Once the stream callback is running, runner/route failures are emitted as terminal `run.failed`/`data-outcome` events; a stream-framework error uses the generic `onError` message.
+- `getModelConfig()` and `getRagConfig()` run before the AI SDK stream is created. LangGraph requests additionally require `FASTAPI_BASE_URL` and `FASTAPI_INTERNAL_TOKEN`.
+- The route selects a backend only from server configuration and a server-created request ID. Client input cannot select a runner or widen access scope.
+- Invalid request bodies return HTTP 400 (`invalid_request`). Setup failures return HTTP 429 for quota errors or HTTP 500 (`internal_error`) without exposing configuration details. Before backend SSE bytes are consumed, backend failures fall back to AI SDK; after stream creation, failures are emitted through the existing stream error path.
 
 ### Runner
 

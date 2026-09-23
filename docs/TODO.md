@@ -3,9 +3,9 @@
 
 ## Status
 
-Design only. The current production path remains the AI SDK runner in `lib/agent/ai-sdk-runner.ts`. The target implementation runs in `apps/api`; LangGraph is not implemented.
+The FastAPI/LangGraph runner, BFF rollout controls, paired comparison harness, and ingestion worker now exist in the monorepo. The TypeScript AI SDK runner remains the production default and rollback path until the Phase 4 evaluation and controlled-traffic gate passes.
 
-The graph semantics below preserve the existing runner's bounded attempts, evidence policy, citation validation, and terminal outcomes. Use the monorepo plan for service boundaries, contracts, deployment, and the `just` command runner.
+The graph semantics below preserve the existing runner's bounded attempts, evidence policy, citation validation, and terminal outcomes. Use the monorepo plan for service boundaries, deployment, rollout gates, and the `just` command runner.
 
 ## Target architecture
 
