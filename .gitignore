@@ -1,15 +1,19 @@
 # deps
 /node_modules
+/apps/web/node_modules/
 
 # generated content
 .contentlayer
 .content-collections
 .source
+/apps/web/.source/
 
 # test & build
 /coverage
 /.next/
+/apps/web/.next/
 /out/
+/apps/web/out/
 /build
 *.tsbuildinfo
 
