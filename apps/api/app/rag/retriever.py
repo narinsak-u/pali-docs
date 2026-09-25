@@ -67,6 +67,20 @@ def _format_passage(passage: GroundingPassage) -> str:
         f"{_escape_xml(passage.text)}\n</passage>"
     )
 
+def _add_parent_context(passage: GroundingPassage) -> GroundingPassage:
+    if passage.parent_text is None:
+        return passage
+    return GroundingPassage(
+        id=passage.id,
+        source=passage.source,
+        title=passage.title,
+        section=passage.section,
+        text=f"{passage.parent_text}\n\n{passage.text}",
+        score=passage.score,
+        parent_id=passage.parent_id,
+        parent_text=passage.parent_text,
+    )
+
 
 def _expand_by_parent(passages: list[GroundingPassage]) -> list[GroundingPassage]:
     groups: dict[str, list[GroundingPassage]] = {}
@@ -85,7 +99,10 @@ def _expand_by_parent(passages: list[GroundingPassage]) -> list[GroundingPassage
         if parent_id in seen_parents:
             continue
         seen_parents.add(parent_id)
-        expanded.extend(groups.get(parent_id, [passage]))
+        expanded.extend(
+            _add_parent_context(candidate) if index == 0 else candidate
+            for index, candidate in enumerate(groups.get(parent_id, [passage]))
+        )
     return expanded
 
 def _is_valid_reranked(
@@ -101,9 +118,13 @@ def _is_valid_reranked(
         or not all(isinstance(item, GroundingPassage) for item in reranked)
     ):
         return False
+    candidate_by_id = {item.id: item for item in candidates}
     reranked_ids = [item.id for item in reranked]
-    candidate_ids = {item.id for item in candidates}
-    return len(set(reranked_ids)) == expected_count and set(reranked_ids) <= candidate_ids
+    return (
+        len(set(reranked_ids)) == expected_count
+        and set(reranked_ids) <= candidate_by_id.keys()
+        and all(candidate_by_id[item.id] == item for item in reranked)
+    )
 
 
 class PineconeRetriever:
@@ -177,18 +198,21 @@ class PineconeRetriever:
 
         if config.RAG_RERANKER_ENABLED:
             dense_candidates = candidates
+            rerank_candidates = dense_candidates[
+                : config.RAG_RERANKER_MAX_CANDIDATES
+            ]
             try:
                 reranked = await asyncio.wait_for(
                     self._off_loop(
                         self._rerank_fn,
                         normalized_query,
-                        dense_candidates,
+                        rerank_candidates,
                         config.RAG_RERANKER_MAX_CANDIDATES,
                     ),
                     timeout=config.RAG_RERANKER_TIMEOUT_MS / 1000,
                 )
                 if _is_valid_reranked(
-                    dense_candidates,
+                    rerank_candidates,
                     reranked,
                     config.RAG_RERANKER_MAX_CANDIDATES,
                 ):
@@ -325,15 +349,16 @@ class PineconeRetriever:
 
             section = _non_empty_string(metadata.get("section"))
             parent_id = _non_empty_string(metadata.get("parentId"))
+            parent_text = _non_empty_string(metadata.get("parentText"))
             passages.append(
                 GroundingPassage(
                     id=match_id,
                     source=source,
                     title=title,
-                    section=section,
                     text=text,
                     score=score_float,
                     parent_id=parent_id,
+                    parent_text=parent_text,
                 )
             )
         if malformed_score and not passages:

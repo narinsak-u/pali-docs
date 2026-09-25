@@ -62,8 +62,16 @@ def _sections(text: str) -> list[tuple[int, str | None, str]]:
     return sections
 
 
-def _chunk_id(source_id: str, index: int, text: str) -> str:
-    payload = f"{source_id}\0{index}\0{text}".encode("utf-8")
+def _chunk_id(
+    source_id: str,
+    source_version: str,
+    policy_version: str,
+    index: int,
+    text: str,
+) -> str:
+    payload = (
+        f"{source_id}\0{source_version}\0{policy_version}\0{index}\0{text}"
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -101,7 +109,7 @@ def chunk_text(
     chunks: list[Chunk] = []
 
     for section_index, heading, section_body in _sections(text):
-        section = heading or fallback_section
+        section = heading or fallback_section or "document"
         parent_id = _parent_id(source_id, source_version, section_index, section)
         pieces: list[str] = []
         for paragraph in _paragraphs(section_body):
@@ -115,7 +123,13 @@ def chunk_text(
                 chunk_text_value = "\n\n".join(current)
                 chunks.append(
                     Chunk(
-                        id=_chunk_id(source_id, len(chunks), chunk_text_value),
+                        id=_chunk_id(
+                            source_id,
+                            source_version,
+                            selected_policy.version,
+                            len(chunks),
+                            chunk_text_value,
+                        ),
                         parent_id=parent_id,
                         source_id=source_id,
                         source_version=source_version,
@@ -123,6 +137,7 @@ def chunk_text(
                         text=chunk_text_value,
                         title=title,
                         section=section,
+                        parent_text=section_body,
                         acl_metadata=acl,
                     )
                 )
@@ -135,7 +150,13 @@ def chunk_text(
             chunk_text_value = "\n\n".join(current)
             chunks.append(
                 Chunk(
-                    id=_chunk_id(source_id, len(chunks), chunk_text_value),
+                    id=_chunk_id(
+                        source_id,
+                        source_version,
+                        selected_policy.version,
+                        len(chunks),
+                        chunk_text_value,
+                    ),
                     parent_id=parent_id,
                     source_id=source_id,
                     source_version=source_version,
@@ -143,6 +164,7 @@ def chunk_text(
                     text=chunk_text_value,
                     title=title,
                     section=section,
+                    parent_text=section_body,
                     acl_metadata=acl,
                 )
             )

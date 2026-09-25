@@ -43,12 +43,20 @@ async function rerankWithTimeout(
   );
   try {
     return await Promise.race([
-      reranker(query, candidates, maxCandidates, signal),
+      reranker(query, candidates.slice(0, maxCandidates), maxCandidates, signal),
       timeoutPromise,
     ]);
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function addParentContext(passage: GroundingPassage): GroundingPassage {
+  if (passage.parentText === undefined) return passage;
+  return {
+    ...passage,
+    text: `${passage.parentText}\n\n${passage.text}`,
+  };
 }
 
 function expandByParent(passages: GroundingPassage[]): GroundingPassage[] {
@@ -69,7 +77,11 @@ function expandByParent(passages: GroundingPassage[]): GroundingPassage[] {
     }
     if (seenParents.has(passage.parentId)) continue;
     seenParents.add(passage.parentId);
-    expanded.push(...(groups.get(passage.parentId) ?? [passage]));
+    expanded.push(
+      ...(groups.get(passage.parentId) ?? [passage]).map((candidate, index) =>
+        index === 0 ? addParentContext(candidate) : candidate,
+      ),
+    );
   }
   return expanded;
 }
@@ -146,10 +158,25 @@ function isValidReranked(
   if (reranked.length !== expectedCount) return false;
   const candidateIds = new Set(candidates.map(({ id }) => id));
   const rerankedIds = reranked.map(({ id }) => id);
-  return (
-    new Set(rerankedIds).size === expectedCount &&
-    rerankedIds.every((id) => candidateIds.has(id))
-  );
+  if (
+    new Set(rerankedIds).size !== expectedCount ||
+    !rerankedIds.every((id) => candidateIds.has(id))
+  ) {
+    return false;
+  }
+  return reranked.every((rerankedPassage) => {
+    const candidate = candidates.find(({ id }) => id === rerankedPassage.id);
+    return (
+      candidate !== undefined &&
+      candidate.score === rerankedPassage.score &&
+      candidate.text === rerankedPassage.text &&
+      candidate.source === rerankedPassage.source &&
+      candidate.title === rerankedPassage.title &&
+      candidate.section === rerankedPassage.section &&
+      candidate.parentId === rerankedPassage.parentId &&
+      candidate.parentText === rerankedPassage.parentText
+    );
+  });
 }
 
 export interface RetrievalDependencies {
@@ -207,13 +234,16 @@ export async function retrieve(
 
   const candidateCount = candidates.length;
   let rerankerUsed = false;
-
   if (config.RAG_RERANKER_ENABLED) {
     const denseCandidates = candidates;
+    const boundedCandidates = denseCandidates.slice(
+      0,
+      config.RAG_RERANKER_MAX_CANDIDATES,
+    );
     try {
       const reranked = await rerankWithTimeout(
         query,
-        denseCandidates,
+        boundedCandidates,
         config.RAG_RERANKER_MAX_CANDIDATES,
         config.RAG_RERANKER_TIMEOUT_MS,
         dependencies.rerankCandidates ?? rerankCandidates,
@@ -221,7 +251,7 @@ export async function retrieve(
       );
       if (
         isValidReranked(
-          denseCandidates,
+          boundedCandidates,
           reranked,
           config.RAG_RERANKER_MAX_CANDIDATES,
         )

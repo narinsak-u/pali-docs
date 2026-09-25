@@ -386,7 +386,7 @@ export function createAiSdkAgentTurnRunner(
             runId: input.runId,
             attempt,
             matchCount:
-              bundle.retrievalMetrics?.candidateCount ??
+              bundle.retrievalMetrics?.acceptedCount ??
               (bundle.status === "grounded" ? bundle.passages.length : 0),
             ...(bundle.status === "grounded"
               ? {

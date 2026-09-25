@@ -42,6 +42,7 @@ class Chunk:
     text: str
     title: str
     section: str | None = None
+    parent_text: str | None = None
     acl_metadata: Mapping[str, JsonValue] = field(
         default_factory=lambda: {"visibility": "public"}
     )
@@ -54,6 +55,8 @@ class Chunk:
             raise ValueError("chunk identity fields must be non-empty")
         if self.section is not None and not self.section.strip():
             raise ValueError("chunk section must be non-empty when provided")
+        if self.parent_text is not None and not self.parent_text.strip():
+            raise ValueError("chunk parent_text must be non-empty when provided")
         if self.index < 0:
             raise ValueError("chunk index must be non-negative")
         if not self.text.strip():

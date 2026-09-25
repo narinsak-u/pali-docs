@@ -40,7 +40,13 @@ function readyManifest() {
     schemaVersion: 1,
     status: "ready",
     corpusRevision: "corpus-1",
-    baseline: { outcomeAccuracy: 0.9 },
+    baseline: {
+      outcomeAccuracy: 0.9,
+      sourceRecall: 0.9,
+      citationPrecision: 0.95,
+      citationCompleteness: 0.9,
+      maxLatencyP95: 500,
+    },
     cases,
   };
 }

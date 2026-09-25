@@ -116,8 +116,9 @@ def _chunk_metadata(chunk: Chunk, revision: str) -> dict[str, object]:
     )
     if chunk.section is not None:
         metadata["section"] = _metadata_value(chunk.section, "section")
+    if chunk.parent_text is not None:
+        metadata["parentText"] = _metadata_value(chunk.parent_text, "parentText")
     return metadata
-
 
 def _upserted_count(response: object) -> int:
     if isinstance(response, bool):

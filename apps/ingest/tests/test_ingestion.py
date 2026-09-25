@@ -77,8 +77,8 @@ def test_chunks_publish_deterministic_hierarchy_metadata() -> None:
     grammar_chunks = [chunk for chunk in chunks if chunk.section == "Grammar"]
     example_chunks = [chunk for chunk in chunks if chunk.section == "Examples"]
 
-    assert grammar_chunks
-    assert example_chunks
+    assert grammar_chunks[0].parent_text == "First paragraph.\n\nSecond paragraph."
+    assert example_chunks[0].parent_text == "A related example."
     assert len({chunk.parent_id for chunk in grammar_chunks}) == 1
     assert len({chunk.parent_id for chunk in example_chunks}) == 1
     assert grammar_chunks[0].parent_id != example_chunks[0].parent_id
@@ -95,6 +95,31 @@ def test_chunks_publish_deterministic_hierarchy_metadata() -> None:
         )
     ]
 
+
+def test_chunk_ids_include_source_version_and_chunking_policy() -> None:
+    text = "# Grammar\n\nA passage."
+    base = chunk_text(
+        text,
+        source_id="docs/guide",
+        source_version="version-a",
+        title="Guide",
+        policy=ChunkingPolicy(version="policy-a"),
+    )
+
+    assert base[0].id != chunk_text(
+        text,
+        source_id="docs/guide",
+        source_version="version-b",
+        title="Guide",
+        policy=ChunkingPolicy(version="policy-a"),
+    )[0].id
+    assert base[0].id != chunk_text(
+        text,
+        source_id="docs/guide",
+        source_version="version-a",
+        title="Guide",
+        policy=ChunkingPolicy(version="policy-b"),
+    )[0].id
 
 
 
@@ -120,6 +145,7 @@ def test_publisher_includes_hierarchy_metadata() -> None:
 
     assert seen[0]["parentId"] == chunks[0].parent_id
     assert seen[0]["section"] == "Intro"
+    assert seen[0]["parentText"] == chunks[0].parent_text
 
 
 def test_publisher_stages_metadata_and_rejects_dimension_mismatch() -> None:
@@ -152,6 +178,7 @@ def test_publisher_stages_metadata_and_rejects_dimension_mismatch() -> None:
         "sourceId": "docs/guide",
         "sourceVersion": "abc123",
         "parentId": chunks[0].parent_id,
+        "parentText": chunks[0].parent_text,
     }
 
     bad = PineconePublisher(

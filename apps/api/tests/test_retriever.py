@@ -150,6 +150,7 @@ async def test_retriever_expands_children_with_the_same_parent_when_enabled() ->
     sibling = match("sibling", score=0.71)
     unrelated = match("unrelated", score=0.8)
     child["metadata"]["parentId"] = "parent-1"  # type: ignore[index]
+    child["metadata"]["parentText"] = "section context"  # type: ignore[index]
     sibling["metadata"]["parentId"] = "parent-1"  # type: ignore[index]
     unrelated["metadata"]["parentId"] = "parent-2"  # type: ignore[index]
 
@@ -167,6 +168,7 @@ async def test_retriever_expands_children_with_the_same_parent_when_enabled() ->
     assert [passage.id for passage in result.passages] == ["child", "sibling"]
 
 
+    assert "section context" in result.passages[0].text
 @pytest.mark.asyncio
 async def test_retriever_reranks_by_query_term_overlap_when_enabled() -> None:
     retriever = PineconeRetriever(

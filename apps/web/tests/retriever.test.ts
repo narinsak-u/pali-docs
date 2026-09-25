@@ -113,18 +113,27 @@ describe("retrieve", () => {
       RAG_HIERARCHY_EXPANSION: true,
       RAG_ACCEPTED_TOP_K: 2,
     });
-    const child = Object.assign(passage("child", 0.9), { parentId: "parent-1" });
-    const sibling = Object.assign(passage("sibling", 0.71), { parentId: "parent-1" });
-    const unrelated = Object.assign(passage("unrelated", 0.8), { parentId: "parent-2" });
+    const child = Object.assign(passage("child", 0.9), {
+      parentId: "parent-1",
+      parentText: "section context",
+    });
+    const sibling = Object.assign(passage("sibling", 0.71), {
+      parentId: "parent-1",
+    });
+    const unrelated = Object.assign(passage("unrelated", 0.8), {
+      parentId: "parent-2",
+    });
     mockedQuery.mockResolvedValue([child, sibling, unrelated]);
 
     const result = await retrieve({ query: "dhamma", attempt: 0 });
 
     expect(result.status).toBe("grounded");
-    expect(result.status === "grounded" && result.passages.map(({ id }) => id)).toEqual([
-      "child",
-      "sibling",
-    ]);
+    expect(
+      result.status === "grounded" && result.passages.map(({ id }) => id),
+    ).toEqual(["child", "sibling"]);
+    expect(result.status === "grounded" && result.context).toContain(
+      "section context",
+    );
   });
 
   it("reranks candidates by query-term overlap when enabled", async () => {
@@ -182,6 +191,30 @@ describe("retrieve", () => {
       passage("score-first", 0.9, { text: "grammar lesson" }),
     ]);
     const rerankCandidates = vi.fn(async () => []);
+
+    const result = await retrieve(
+      { query: "dhamma", attempt: 0 },
+      undefined,
+      { rerankCandidates },
+    );
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages.map(({ id }) => id)).toEqual([
+      "score-first",
+      "term-match",
+    ]);
+  });
+
+  it("falls back when reranker rewrites validated passage content", async () => {
+    Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
+    mockedQuery.mockResolvedValue([
+      passage("score-first", 0.9, { text: "grammar lesson" }),
+      passage("term-match", 0.7, { text: "dhamma grammar" }),
+    ]);
+    const rerankCandidates = vi.fn(async () => [
+      passage("term-match", 0.7, { text: "rewritten content" }),
+      passage("score-first", 0.9, { text: "rewritten content" }),
+    ]);
 
     const result = await retrieve(
       { query: "dhamma", attempt: 0 },

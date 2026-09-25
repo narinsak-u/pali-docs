@@ -134,10 +134,10 @@ const evaluationManifestSchema = z.discriminatedUnion("status", [
       baseline: z
         .object({
           outcomeAccuracy: z.number().min(0).max(1),
-          sourceRecall: z.number().min(0).max(1).optional(),
-          citationPrecision: z.number().min(0).max(1).optional(),
-          citationCompleteness: z.number().min(0).max(1).optional(),
-          maxLatencyP95: z.number().nonnegative().optional(),
+          sourceRecall: z.number().min(0).max(1),
+          citationPrecision: z.number().min(0).max(1),
+          citationCompleteness: z.number().min(0).max(1),
+          maxLatencyP95: z.number().nonnegative(),
         })
         .strict(),
       cases: z.array(evaluationCaseSchema),

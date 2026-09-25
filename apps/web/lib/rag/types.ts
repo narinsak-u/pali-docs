@@ -14,6 +14,7 @@ export interface GroundingPassage extends Citation {
   text: string;
   score: number;
   parentId?: string;
+  parentText?: string;
 }
 
 export interface RetrievalMetrics {

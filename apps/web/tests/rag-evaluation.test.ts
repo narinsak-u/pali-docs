@@ -244,7 +244,13 @@ describe("RAG evaluation manifest safeguards", () => {
       schemaVersion: 1,
       status: "ready",
       corpusRevision: "corpus-1",
-      baseline: { outcomeAccuracy: 0.9 },
+      baseline: {
+        outcomeAccuracy: 0.9,
+        sourceRecall: 0.9,
+        citationPrecision: 0.95,
+        citationCompleteness: 0.9,
+        maxLatencyP95: 500,
+      },
       cases: [],
     });
 
@@ -258,7 +264,13 @@ describe("RAG evaluation manifest safeguards", () => {
       schemaVersion: 1,
       status: "ready",
       corpusRevision: "corpus-1",
-      baseline: { outcomeAccuracy: 0.9 },
+      baseline: {
+        outcomeAccuracy: 0.9,
+        sourceRecall: 0.9,
+        citationPrecision: 0.95,
+        citationCompleteness: 0.9,
+        maxLatencyP95: 500,
+      },
       cases: Array.from({ length: 30 }, (_, index) => ({
         id: `insufficient-${index}`,
         category: "insufficient-evidence",

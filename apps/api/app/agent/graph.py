@@ -315,7 +315,7 @@ async def retrieve_node(state: AgentGraphState, config: object) -> dict[str, obj
 
     metrics = bundle.retrieval_metrics
     match_count = (
-        metrics.candidate_count
+        metrics.accepted_count
         if metrics is not None
         else len(bundle.passages) if bundle.status == "grounded" else 0
     )

@@ -28,6 +28,22 @@ const ragEnvSchema = z.object({
 
 export type RagConfig = z.infer<typeof ragEnvSchema>;
 
-export function getRagConfig(): RagConfig {
-  return ragEnvSchema.parse(process.env);
+const DENSE_RAG_DEFAULTS = {
+  RAG_CANDIDATE_TOP_K: "20",
+  RAG_ACCEPTED_TOP_K: "8",
+  RAG_MIN_SCORE: "0",
+  RAG_HIERARCHY_EXPANSION: "false",
+  RAG_RERANKER_ENABLED: "false",
+  RAG_RERANKER_MAX_CANDIDATES: "20",
+  RAG_RERANKER_TIMEOUT_MS: "100",
+  RAG_MAX_CONTEXT_CHARS: "12000",
+} as const;
+
+export function getRagConfig(env: NodeJS.ProcessEnv = process.env): RagConfig {
+  const parsed = ragEnvSchema.safeParse(env);
+  if (parsed.success) return parsed.data;
+
+  const fallback = ragEnvSchema.safeParse({ ...env, ...DENSE_RAG_DEFAULTS });
+  if (fallback.success) return fallback.data;
+  throw parsed.error;
 }

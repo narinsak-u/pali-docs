@@ -8,7 +8,7 @@ export type Reranker = (
 ) => Promise<GroundingPassage[]>;
 
 function terms(value: string): Set<string> {
-  return new Set(value.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+  return new Set(value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
 }
 
 export async function rerankCandidates(
