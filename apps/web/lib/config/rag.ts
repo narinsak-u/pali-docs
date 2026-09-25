@@ -12,6 +12,12 @@ const ragEnvSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
+  RAG_RERANKER_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  RAG_RERANKER_MAX_CANDIDATES: z.coerce.number().int().min(1).max(50).default(20),
+  RAG_RERANKER_TIMEOUT_MS: z.coerce.number().int().min(1).max(2000).default(100),
   RAG_MAX_CONTEXT_CHARS: z.coerce
     .number()
     .int()

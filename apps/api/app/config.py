@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     RAG_ACCEPTED_TOP_K: int = Field(default=8, ge=1, le=12)
     RAG_MIN_SCORE: float = Field(default=0, ge=0, le=1)
     RAG_HIERARCHY_EXPANSION: bool = False
+    RAG_RERANKER_ENABLED: bool = False
+    RAG_RERANKER_MAX_CANDIDATES: int = Field(default=20, ge=1, le=50)
+    RAG_RERANKER_TIMEOUT_MS: int = Field(default=100, ge=1, le=2000)
     RAG_MAX_CONTEXT_CHARS: int = Field(default=12000, ge=1000, le=50000)
 
     INTERNAL_API_TOKEN: str | None = None

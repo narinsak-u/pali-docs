@@ -1,6 +1,7 @@
 import { getRagConfig } from "@/lib/config/rag";
 import { generateQueryEmbedding } from "@/lib/services/embedding";
 import { queryPinecone } from "@/lib/services/vector-store";
+import { rerankCandidates, type Reranker } from "@/lib/rag/reranker";
 import type {
   Citation,
   GroundingBundle,
@@ -22,6 +23,32 @@ function formatPassage(passage: GroundingPassage): string {
     ? ` section="${escapeXml(passage.section)}"`
     : "";
   return `<passage id="${escapeXml(passage.id)}" source="${escapeXml(passage.source)}" title="${escapeXml(passage.title)}"${section}>\n${escapeXml(passage.text)}\n</passage>`;
+}
+
+async function rerankWithTimeout(
+  query: string,
+  candidates: GroundingPassage[],
+  maxCandidates: number,
+  timeoutMs: number,
+  reranker: Reranker,
+  signal?: AbortSignal,
+): Promise<GroundingPassage[]> {
+  let timeoutReject: (reason?: unknown) => void = () => {};
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutReject = reject;
+  });
+  const timeout = setTimeout(
+    () => timeoutReject(new Error("reranker timed out")),
+    timeoutMs,
+  );
+  try {
+    return await Promise.race([
+      reranker(query, candidates, maxCandidates, signal),
+      timeoutPromise,
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function expandByParent(passages: GroundingPassage[]): GroundingPassage[] {
@@ -54,14 +81,17 @@ function selectPassages(
   maxContextChars: number,
   corpusRevision: string,
   hierarchyExpansion: boolean,
+  preserveOrder: boolean,
 ): { passages: GroundingPassage[]; context: string } | null {
   const ranked = candidates
     .map((passage, index) => ({ passage, index }))
-    .filter(({ passage }) => passage.score >= minScore)
-    .sort(
+    .filter(({ passage }) => passage.score >= minScore);
+  if (!preserveOrder) {
+    ranked.sort(
       (left, right) =>
         right.passage.score - left.passage.score || left.index - right.index,
     );
+  }
 
   const unique: GroundingPassage[] = [];
   const seenIds = new Set<string>();
@@ -107,9 +137,29 @@ function toCitation(passage: GroundingPassage): Citation {
   };
 }
 
+function isValidReranked(
+  candidates: GroundingPassage[],
+  reranked: GroundingPassage[],
+  maxCandidates: number,
+): boolean {
+  const expectedCount = Math.min(candidates.length, maxCandidates);
+  if (reranked.length !== expectedCount) return false;
+  const candidateIds = new Set(candidates.map(({ id }) => id));
+  const rerankedIds = reranked.map(({ id }) => id);
+  return (
+    new Set(rerankedIds).size === expectedCount &&
+    rerankedIds.every((id) => candidateIds.has(id))
+  );
+}
+
+export interface RetrievalDependencies {
+  rerankCandidates?: Reranker;
+}
+
 export async function retrieve(
   request: RetrievalRequest,
   signal?: AbortSignal,
+  dependencies: RetrievalDependencies = {},
 ): Promise<GroundingBundle> {
   const config = getRagConfig();
   const query = request.query.trim();
@@ -155,6 +205,30 @@ export async function retrieve(
     };
   }
 
+  if (config.RAG_RERANKER_ENABLED) {
+    const denseCandidates = candidates;
+    try {
+      const reranked = await rerankWithTimeout(
+        query,
+        denseCandidates,
+        config.RAG_RERANKER_MAX_CANDIDATES,
+        config.RAG_RERANKER_TIMEOUT_MS,
+        dependencies.rerankCandidates ?? rerankCandidates,
+        signal,
+      );
+      candidates = isValidReranked(
+        denseCandidates,
+        reranked,
+        config.RAG_RERANKER_MAX_CANDIDATES,
+      )
+        ? reranked
+        : denseCandidates;
+    } catch {
+      signal?.throwIfAborted();
+      candidates = denseCandidates;
+    }
+  }
+
   const selected = selectPassages(
     candidates,
     config.RAG_MIN_SCORE,
@@ -162,6 +236,7 @@ export async function retrieve(
     config.RAG_MAX_CONTEXT_CHARS,
     config.PINECONE_CORPUS_REVISION,
     config.RAG_HIERARCHY_EXPANSION,
+    config.RAG_RERANKER_ENABLED,
   );
 
   if (!selected) {

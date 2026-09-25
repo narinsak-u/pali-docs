@@ -19,6 +19,9 @@ def settings(**overrides: object) -> SimpleNamespace:
         "RAG_ACCEPTED_TOP_K": 8,
         "RAG_MIN_SCORE": 0.5,
         "RAG_HIERARCHY_EXPANSION": False,
+        "RAG_RERANKER_ENABLED": False,
+        "RAG_RERANKER_MAX_CANDIDATES": 20,
+        "RAG_RERANKER_TIMEOUT_MS": 100,
         "RAG_MAX_CONTEXT_CHARS": 12_000,
     }
     values.update(overrides)
@@ -163,6 +166,53 @@ async def test_retriever_expands_children_with_the_same_parent_when_enabled() ->
     assert isinstance(result, GroundedBundle)
     assert [passage.id for passage in result.passages] == ["child", "sibling"]
 
+
+@pytest.mark.asyncio
+async def test_retriever_reranks_by_query_term_overlap_when_enabled() -> None:
+    retriever = PineconeRetriever(
+        settings(RAG_RERANKER_ENABLED=True, RAG_RERANKER_MAX_CANDIDATES=2),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [
+                match("score-first", score=0.9, text="grammar lesson"),
+                match("term-match", score=0.7, text="dhamma grammar"),
+            ],
+        },
+    )
+
+    result = await retriever.retrieve("dhamma", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == [
+        "term-match",
+        "score-first",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retriever_falls_back_to_dense_order_when_reranker_fails() -> None:
+    def rerank_fn(*_args: object) -> list[GroundingPassage]:
+        raise RuntimeError("reranker unavailable")
+
+    retriever = PineconeRetriever(
+        settings(RAG_RERANKER_ENABLED=True),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [
+                match("score-first", score=0.9, text="grammar lesson"),
+                match("term-match", score=0.7, text="dhamma grammar"),
+            ],
+        },
+        rerank_fn=rerank_fn,
+    )
+
+    result = await retriever.retrieve("dhamma", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == [
+        "score-first",
+        "term-match",
+    ]
 
 
 @pytest.mark.asyncio

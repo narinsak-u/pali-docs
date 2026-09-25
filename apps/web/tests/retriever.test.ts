@@ -9,6 +9,9 @@ const mockedConfig = vi.hoisted(() => ({
   RAG_ACCEPTED_TOP_K: 3,
   RAG_MIN_SCORE: 0.7,
   RAG_HIERARCHY_EXPANSION: false,
+  RAG_RERANKER_ENABLED: false,
+  RAG_RERANKER_MAX_CANDIDATES: 20,
+  RAG_RERANKER_TIMEOUT_MS: 100,
   RAG_MAX_CONTEXT_CHARS: 2_000,
 }));
 
@@ -62,6 +65,9 @@ beforeEach(() => {
     RAG_ACCEPTED_TOP_K: 3,
     RAG_MIN_SCORE: 0.7,
     RAG_HIERARCHY_EXPANSION: false,
+    RAG_RERANKER_ENABLED: false,
+    RAG_RERANKER_MAX_CANDIDATES: 20,
+    RAG_RERANKER_TIMEOUT_MS: 100,
     RAG_MAX_CONTEXT_CHARS: 2_000,
   });
   mockedEmbed.mockResolvedValue([0.1, 0.2]);
@@ -121,8 +127,74 @@ describe("retrieve", () => {
     ]);
   });
 
+  it("reranks candidates by query-term overlap when enabled", async () => {
+    Object.assign(mockedConfig, {
+      RAG_RERANKER_ENABLED: true,
+      RAG_RERANKER_MAX_CANDIDATES: 2,
+    });
+    mockedQuery.mockResolvedValue([
+      passage("score-first", 0.9, { text: "grammar lesson" }),
+      passage("term-match", 0.7, { text: "dhamma grammar" }),
+    ]);
+
+    const result = await retrieve({ query: "dhamma", attempt: 0 });
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages.map(({ id }) => id)).toEqual([
+      "term-match",
+      "score-first",
+    ]);
+  });
 
 
+
+  it("falls back to dense ordering when reranking times out", async () => {
+    Object.assign(mockedConfig, {
+      RAG_RERANKER_ENABLED: true,
+      RAG_RERANKER_TIMEOUT_MS: 1,
+    });
+    mockedQuery.mockResolvedValue([
+      passage("score-first", 0.9, { text: "grammar lesson" }),
+      passage("term-match", 0.7, { text: "dhamma grammar" }),
+    ]);
+    const rerankCandidates = vi.fn(
+      () => new Promise<GroundingPassage[]>(() => undefined),
+    );
+
+    const result = await retrieve(
+      { query: "dhamma", attempt: 0 },
+      undefined,
+      { rerankCandidates },
+    );
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages.map(({ id }) => id)).toEqual([
+      "score-first",
+      "term-match",
+    ]);
+  });
+
+
+  it("falls back to dense ordering when reranker returns incomplete output", async () => {
+    Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
+    mockedQuery.mockResolvedValue([
+      passage("score-first", 0.9, { text: "grammar lesson" }),
+      passage("term-match", 0.7, { text: "dhamma grammar" }),
+    ]);
+    const rerankCandidates = vi.fn(async () => []);
+
+    const result = await retrieve(
+      { query: "dhamma", attempt: 0 },
+      undefined,
+      { rerankCandidates },
+    );
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages.map(({ id }) => id)).toEqual([
+      "score-first",
+      "term-match",
+    ]);
+  });
   it("rejects candidates below minScore while accepting the boundary", async () => {
     mockedQuery.mockResolvedValue([
       passage("low", 0.699),

@@ -17,9 +17,12 @@ from .types import (
     InsufficientEvidenceBundle,
     UnavailableBundle,
 )
+from .reranker import rerank_candidates
+
 
 EmbeddingFn = Callable[[str], Any]
 QueryFn = Callable[[Sequence[float], int, str, Mapping[str, object] | None], Any]
+RerankFn = Callable[[str, list[GroundingPassage], int], Any]
 
 
 class RetrievalIntegrityError(ValueError):
@@ -84,6 +87,23 @@ def _expand_by_parent(passages: list[GroundingPassage]) -> list[GroundingPassage
         expanded.extend(groups.get(parent_id, [passage]))
     return expanded
 
+def _is_valid_reranked(
+    candidates: list[GroundingPassage],
+    reranked: object,
+    max_candidates: int,
+) -> bool:
+    if not isinstance(reranked, list):
+        return False
+    expected_count = min(len(candidates), max_candidates)
+    if (
+        len(reranked) != expected_count
+        or not all(isinstance(item, GroundingPassage) for item in reranked)
+    ):
+        return False
+    reranked_ids = [item.id for item in reranked]
+    candidate_ids = {item.id for item in candidates}
+    return len(set(reranked_ids)) == expected_count and set(reranked_ids) <= candidate_ids
+
 
 class PineconeRetriever:
     """Application-owned, fail-closed retrieval policy around Pinecone."""
@@ -94,11 +114,13 @@ class PineconeRetriever:
         embedder: EmbeddingFn | None = None,
         query_fn: QueryFn | None = None,
         client: Any | None = None,
+        rerank_fn: RerankFn | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self._client = client
         self._embedder = embedder or self._embed_with_pinecone
         self._query_fn = query_fn or self._query_pinecone
+        self._rerank_fn = rerank_fn or rerank_candidates
 
     async def retrieve(
         self,
@@ -140,7 +162,7 @@ class PineconeRetriever:
             )
 
         try:
-            selected = self._select_passages(result)
+            candidates = self._passages(result)
         except RetrievalIntegrityError:
             return UnavailableBundle(
                 status="unavailable",
@@ -148,6 +170,31 @@ class PineconeRetriever:
                 corpus_revision=config.PINECONE_CORPUS_REVISION,
                 error_code="vector_store_unavailable",
             )
+
+        if config.RAG_RERANKER_ENABLED:
+            dense_candidates = candidates
+            try:
+                reranked = await asyncio.wait_for(
+                    self._off_loop(
+                        self._rerank_fn,
+                        normalized_query,
+                        dense_candidates,
+                        config.RAG_RERANKER_MAX_CANDIDATES,
+                    ),
+                    timeout=config.RAG_RERANKER_TIMEOUT_MS / 1000,
+                )
+                if _is_valid_reranked(
+                    dense_candidates,
+                    reranked,
+                    config.RAG_RERANKER_MAX_CANDIDATES,
+                ):
+                    candidates = reranked
+            except Exception:
+                candidates = dense_candidates
+
+        selected = self._select_passages(
+            candidates, preserve_order=config.RAG_RERANKER_ENABLED
+        )
         if selected is None:
             return self._insufficient(normalized_query)
 
@@ -276,18 +323,17 @@ class PineconeRetriever:
 
     def _select_passages(
         self,
-        result: object,
+        candidates: list[GroundingPassage],
+        preserve_order: bool = False,
     ) -> tuple[list[GroundingPassage], str] | None:
         config = self.settings
-        ranked = sorted(
-            (
-                (index, passage)
-                for index, passage in enumerate(self._passages(result))
-                if passage.score >= config.RAG_MIN_SCORE
-            ),
-            key=lambda item: (-item[1].score, item[0]),
-        )
-
+        ranked = [
+            (index, passage)
+            for index, passage in enumerate(candidates)
+            if passage.score >= config.RAG_MIN_SCORE
+        ]
+        if not preserve_order:
+            ranked.sort(key=lambda item: (-item[1].score, item[0]))
         unique: list[GroundingPassage] = []
         seen_ids: set[str] = set()
         for _, passage in ranked:
