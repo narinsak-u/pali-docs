@@ -22,6 +22,12 @@ EmbeddingFn = Callable[[str], Any]
 QueryFn = Callable[[Sequence[float], int, str, Mapping[str, object] | None], Any]
 
 
+class RetrievalIntegrityError(ValueError):
+    """Raised when a vector response contains unusable score data."""
+
+
+
+
 def _value(value: object, name: str, default: object = None) -> object:
     if isinstance(value, Mapping):
         return value.get(name, default)
@@ -112,7 +118,15 @@ class PineconeRetriever:
                 error_code="vector_store_unavailable",
             )
 
-        selected = self._select_passages(result)
+        try:
+            selected = self._select_passages(result)
+        except RetrievalIntegrityError:
+            return UnavailableBundle(
+                status="unavailable",
+                query=normalized_query,
+                corpus_revision=config.PINECONE_CORPUS_REVISION,
+                error_code="vector_store_unavailable",
+            )
         if selected is None:
             return self._insufficient(normalized_query)
 
@@ -189,6 +203,7 @@ class PineconeRetriever:
     def _passages(self, result: object) -> list[GroundingPassage]:
         revision = self.settings.PINECONE_CORPUS_REVISION
         passages: list[GroundingPassage] = []
+        malformed_score = False
         for match in self._matches(result):
             match_id = _non_empty_string(_value(match, "id"))
             metadata = _value(match, "metadata")
@@ -210,12 +225,15 @@ class PineconeRetriever:
 
             score = _value(match, "score")
             if isinstance(score, bool) or not isinstance(score, Real):
+                malformed_score = True
                 continue
             try:
                 score_float = float(score)
             except (OverflowError, TypeError, ValueError):
+                malformed_score = True
                 continue
             if not math.isfinite(score_float):
+                malformed_score = True
                 continue
 
             section = _non_empty_string(metadata.get("section"))
@@ -229,6 +247,8 @@ class PineconeRetriever:
                     score=score_float,
                 )
             )
+        if malformed_score and not passages:
+            raise RetrievalIntegrityError("Pinecone returned malformed scores")
         return passages
 
     def _select_passages(

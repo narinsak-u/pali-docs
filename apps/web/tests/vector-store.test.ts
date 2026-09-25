@@ -86,6 +86,28 @@ describe("queryPinecone", () => {
       },
     ]);
   });
+  it("rejects a response containing only malformed scores as unavailable", async () => {
+    const mockQuery = vi.fn().mockResolvedValue({
+      matches: [
+        {
+          id: "malformed",
+          score: Number.NaN,
+          metadata: {
+            text: "invalid score",
+            source: "part-1/chapter-1",
+            title: "บทที่ 1",
+            corpusRevision: "corpus-2026-09-18",
+          },
+        },
+      ],
+    });
+    mockedNamespace.mockReturnValue({ query: mockQuery });
+
+    await expect(queryPinecone([0.1], 3)).rejects.toThrow(
+      "Pinecone returned malformed scores",
+    );
+  });
+
 
   it("drops missing, stale, and mixed corpus revisions while retaining matching records", async () => {
     const mockQuery = vi.fn().mockResolvedValue({

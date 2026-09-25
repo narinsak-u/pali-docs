@@ -24,7 +24,8 @@ export async function queryPinecone(
       includeMetadata: true,
     });
 
-  return results.matches.flatMap((match): GroundingPassage[] => {
+  let malformedScore = false;
+  const passages = results.matches.flatMap((match): GroundingPassage[] => {
     const metadata = match.metadata;
     if (
       !isNonEmptyString(match.id) ||
@@ -38,16 +39,21 @@ export async function queryPinecone(
       return [];
     }
 
+    if (
+      typeof match.score !== "number" ||
+      !Number.isFinite(match.score)
+    ) {
+      malformedScore = true;
+      return [];
+    }
+
     const section = isNonEmptyString(metadata.section)
       ? metadata.section
       : undefined;
     return [
       {
         id: match.id,
-        score:
-          typeof match.score === "number" && Number.isFinite(match.score)
-            ? match.score
-            : 0,
+        score: match.score,
         text: metadata.text,
         source: metadata.source,
         title: metadata.title,
@@ -55,4 +61,9 @@ export async function queryPinecone(
       },
     ];
   });
+
+  if (malformedScore && passages.length === 0) {
+    throw new Error("Pinecone returned malformed scores");
+  }
+  return passages;
 }

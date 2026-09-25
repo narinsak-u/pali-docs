@@ -79,6 +79,22 @@ async def test_retriever_discards_untrusted_metadata_and_scores() -> None:
     assert "stale" not in result.context
 
 
+
+@pytest.mark.asyncio
+async def test_retriever_returns_unavailable_when_all_scores_are_malformed() -> None:
+    retriever = PineconeRetriever(
+        settings=settings(),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": [match("malformed", score=float("nan"))]},
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, UnavailableBundle)
+    assert result.status == "unavailable"
+    assert result.error_code == "vector_store_unavailable"
+
+
 @pytest.mark.asyncio
 async def test_retriever_passes_scope_and_applies_accepted_bound() -> None:
     seen: dict[str, object] = {}
