@@ -1,201 +1,250 @@
 # Chat RAG Workflow
 
-## Overview
+## Scope
 
-The chat endpoint (`POST /api/question`) implements a Retrieval-Augmented Generation (RAG) pipeline for Pali language questions. The LLM uses a `searchDocs` tool to fetch relevant textbook passages from Pinecone, then continues generation with the retrieved context injected into the system prompt. Follow-up question suggestions are generated after the answer is complete.
+`POST /api/question` is the streaming chat endpoint. This document describes the implemented TypeScript runner, optional FastAPI/LangGraph backend, retriever, event, UI, configuration, cancellation, rollout, and evaluation contracts. Live LangGraph promotion remains gated by the evaluation baseline and controlled-traffic window.
 
-## Architecture
+## Framework responsibilities
 
-```
-Client ──POST /api/question──→ Route Handler
-                                   │
-                          createUIMessageStream
-                                   │
-                            streamText (LLM)
-                              │          │
-                              │    searchDocs tool
-                              │          │
-                              │    searchDocuments()
-                              │     ├─ generateEmbedding()
-                              │     └─ queryPinecone()
-                              │          │
-                              │    prepareStep()
-                              │     └─ inject context into system prompt
-                              │          │
-                              │    suggestQuestions tool
-                              │     └─ follow-up questions to client
-                              │
-                          consumeStream()
-                                   │
-                    createUIMessageStreamResponse
-                                   │
-Client ←── streaming response ────┘
-```
+The application keeps framework concerns behind stable, framework-neutral boundaries:
 
-## LLM Provider Switching
+| Boundary | Responsibility |
+| --- | --- |
+| `Retriever` | Owns query embedding, Pinecone search, metadata/revision filtering, ranking, context budgeting, provenance, and citation construction. |
+| `@langchain/core` | May provide low-level model, message, and tool primitives or integrations. LangChain does not own the application workflow. |
+| `LangGraphAgentTurnRunner` | Owns the FastAPI/LangGraph orchestration path and exposes only the shared event/result contract through the BFF. |
+| `AgentEventSink` | Adapts framework-neutral events for UI and trace consumers. The route owns HTTP setup, streaming, rollout selection, fallback, and cancellation. |
 
-The chat uses `llm(getDefaultModel())` from `lib/services/llm-provider.ts`, which dynamically selects between providers based on the `PROVIDER_NAME` environment variable:
+LangGraph is available behind the controlled BFF rollout, not as a hard cutover. LangGraph types and messages must not escape the runner; the route and UI receive only the shared `AgentTurnRunner`, `AgentEventSink`, and result contracts. The comparison runner reuses the retriever for the TypeScript path and consumes accepted source IDs from the FastAPI event contract.
 
-| Provider | `PROVIDER_NAME` | Base URL | Key Env Vars | Default Model |
-|----------|-----------------|----------|--------------|---------------|
-| OpenRouter | `openrouter` (default) | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY`, `OPENROUTER_LLM_MODEL` | `google/gemma-3-27b-it:free` |
-| OpenCode | `opencode` | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY`, `OPENCODE_LLM_MODEL` | `deepseek-v4-flash` |
+## Runtime boundaries
 
-Both providers use `createOpenAICompatible` from `@ai-sdk/openai-compatible` under the hood. The `llm()` function creates a configured model instance, and `getDefaultModel()` returns the model name from the appropriate env var.
-
-## Step-by-Step Flow
-
-### 1. Request Handling
-
-- `POST /api/question` receives a JSON body with `{ messages: UIMessage[] }`
-- Messages use the AI SDK's `UIMessage` format (parts-based, supports text + tool calls)
-
-### 2. Stream Initialization
-
-`createUIMessageStream` wraps the entire LLM interaction in a controlled streaming session. The `writer` object allows real-time updates (tool status, reasoning, suggestions) alongside the LLM's text output.
-
-### 3. LLM Invocation with Tool Declaration
-
-`streamText` is called with:
-
-| Parameter | Source | Description |
-|-----------|--------|-------------|
-| `model` | `llm(getDefaultModel())` | Provider-selected model |
-| `system` | `PALI_EXPERT_SYSTEM_PROMPT` | Static prompt defining the Pali expert role |
-| `messages` | `convertToModelMessages(messages)` | Converts UI messages to model format |
-| `stopWhen` | `stepCountIs(5)` | Allows up to 5 tool-calling steps (increased from 2 for DeepSeek compatibility) |
-| `tools` | `searchDocs`, `suggestQuestions` | Registered tools for RAG and suggestions |
-
-The system prompt (`lib/chat/pali-system-prompt.ts`) instructs the model:
-- Act as a Pali language expert
-- Use `searchDocs` for questions answerable from the textbook corpus
-- Respond in the user's language (Thai, English, etc.)
-
-### 4. Tool Execution — `searchDocs`
-
-When the LLM decides to search, the `execute` handler runs:
-
-**a. Search deduplication guard:**
-```ts
-if (searchCompleted && cachedResult) {
-  // Return cached results immediately — no duplicate Pinecone calls
-  writer.write({
-    type: "data-task",
-    data: { id: toolCallId, label: "ค้นหาเอกสาร", status: "done", ... },
-  });
-  return cachedResult;
-}
-searchCompleted = true;
-```
-This prevents redundant searches when models (e.g. DeepSeek) call the tool multiple times in the same conversation turn.
-
-**b. Status updates** — Writer sends `data-task` events to the client:
-- `running` → UI shows loading state with the query
-- `done` → UI shows match count
-- `error` → UI shows error message, empty results returned
-
-**c. Embedding generation** (`lib/services/embedding.ts`):
-- The search query is embedded using Pinecone's inference API with model `llama-text-embed-v2`
-- A simple LRU cache (100 entries) avoids redundant embedding calls
-
-**d. Vector search** (`lib/services/vector-store.ts`):
-- The embedding vector is queried against the Pinecone index (`PINECONE_INDEX_NAME`) in namespace `PINECONE_NAMESPACE`
-- Returns top 5 matches (`topK`) with `includeMetadata: true`
-- Results are filtered to only include documents with non-empty `text` metadata
-
-**e. Formatting** — `formatContext()` concatenates matched document texts with `\n---\n` separators
-
-**f. Reasoning update** — Writer sends `data-reasoning` with a Thai summary: "พบเอกสารที่เกี่ยวข้อง N รายการ" and text excerpts
-
-**g. Task ID nesting** — `toolCallId` is placed inside `data.id` (not at the top `id` level) to match client-side dedup logic in `ai-message.tsx`
-
-### 5. Context Injection — `prepareStep`
-
-After each tool execution step, `prepareStep` checks for `searchDocs` results:
-
-- Iterates all steps and their tool results
-- If `searchDocs` returned matches, formats them via `formatContext()` and builds a new system prompt:
-  ```
-  {PALI_EXPERT_SYSTEM_PROMPT}
-
-  Context from Pali textbook corpus:
-  {formatted matches}
-  ```
-- Returns `{ system: newPrompt }` → this replaces the system prompt for the next LLM step
-- If no matches found, returns `undefined` (continues with original prompt)
-
-This is the core RAG mechanism: the LLM first decides what to search for (tool call), then continues generation with the retrieved context available.
-
-### 6. Tool Execution — `suggestQuestions`
-
-After the answer is complete, the LLM may call `suggestQuestions`:
-
-```ts
-suggestQuestions: tool({
-  inputSchema: z.object({
-    suggestions: z.array(z.string().min(1)).min(1).max(3),
-  }),
-  execute: async ({ suggestions }) => {
-    if (suggestionsGenerated) return { ok: false }; // dedup guard
-    suggestionsGenerated = true;
-    if (suggestions.length === 0) return { ok: false };
-    writer.write({
-      type: "data-suggestions",
-      data: { suggestions },
-    });
-    return { ok: true };
-  },
-})
+```text
+QuestionClient → useAIChat (DefaultChatTransport)
+  │ POST /api/question ({ messages })
+  ▼
+Route: app/api/question/route.ts
+  ├─ read and validate the bounded raw request body
+  ├─ select AI SDK or FastAPI/LangGraph by server-owned rollout policy
+  ├─ fall back to AI SDK before backend SSE bytes are consumed
+  └─ pass cancellation to the selected runner/stream
+         │
+         ├─ AI SDK: lib/agent/ai-sdk-runner.ts
+         │    └─ direct answer or bounded retrieve → draft → cite → suggest
+         │
+         └─ FastAPI: /v1/question → LangGraph runner
+              └─ versioned SSE events → Next.js event adapter
+         │
+         ▼
+Retriever and event contracts
+  ├─ validate revision, metadata, scores, accepted evidence, and citations
+  └─ stream one terminal outcome to the UI
 ```
 
-### 7. Stream Consumption
+## Data flow
 
-- `writer.merge(result.toUIMessageStream({ sendReasoning: false }))` merges the LLM's text + tool call stream into the UI stream
-- `result.consumeStream()` waits for full completion
+```text
+Browser text
+  → UI messages (`useAIChat` / `QuestionClient`)
+  → bounded safe request (`parseQuestionRequestBody`)
+  → retrieval decision and query (`AgentTurnRunner`)
+  → query embedding → Pinecone vector matches
+  → accepted grounding envelope + citation allow-list
+  → agent events (`AgentEventSink`)
+  → streamed UI parts
+  → rendered answer, process details, and citations
+```
 
-### 8. Response
+1. `QuestionClient` sends text through `useAIChat` and `DefaultChatTransport` as the conversation's UI messages. `parseQuestionRequestBody()` reads the raw body, enforces the 256 KiB body limit, retains only text parts, bounds messages/parts/text, and requires the final retained message to be a nonblank user message. Non-text client parts and messages with no retained text are not carried into the safe request.
+2. `route.ts` selects the AI SDK or FastAPI/LangGraph backend using server-owned rollout configuration. Backend setup, timeout, non-OK, and non-SSE failures fall back to the AI SDK before stream consumption; post-stream failures are not retried.
+3. For retrieval, `retrieve()` trims the query, `generateQueryEmbedding()` creates a Pinecone `llama-text-embed-v2` query vector, and `queryPinecone()` returns metadata-bearing matches. The vector-store boundary drops records with missing identity/text/source/title/revision or a mismatched corpus revision, and normalizes invalid scores to `0`.
+4. The retriever ranks and deduplicates candidates, applies score/count/context bounds without cutting passage text, XML-escapes accepted metadata and text, and returns a grounding envelope plus citations derived from those accepted passages. The runner gives the grounded answer model only that accepted evidence and citation allow-list; invalid or unknown citation IDs are not accepted, with at most one repair attempt.
+5. Runner events are projected by `createAiSdkEventSink()` into schema-validated `data-status`, `data-task`, `data-reasoning`, `text-*`, `data-citations`, `data-suggestions`, and terminal `data-outcome` parts. The structured trace sink carries lifecycle metadata only: raw prompts, questions, rewritten query text, passage bodies, answers, and suggestions are intentionally not carried into traces.
+6. `useAIChat` derives the visible phase and cancellation controls from streamed parts. `AIMessage` validates parts again, reduces task updates, joins answer text, and renders process details, while `CitationList` renders accepted citation metadata and creates `/docs/...` links only for safe source paths. Invalid citation parts are discarded at this UI boundary; unsafe source paths remain plain text rather than links.
 
-`createUIMessageStreamResponse` wraps the stream into a proper HTTP Response with streaming headers.
+The stream carries status and bounded summaries for progress, not a token-by-token model transcript: `answer.completed` becomes one text delta. Terminal outcomes distinguish answered, insufficient evidence, retrieval unavailable, and failure.
 
-### 9. Error Handling
 
-| Error | Status | Response |
-|-------|--------|----------|
-| Quota exceeded (429) | 429 | `{ error: "insufficient_quota" }` |
-| All other errors | 500 | `{ error: "internal_error" }` |
+### Route
 
-Non-LLM exceptions (network, Pinecone failures) are caught at the route level.
+`app/api/question/route.ts` owns HTTP and stream setup:
 
-## Key Files
+- `parseQuestionRequestBody()` reads the request as bytes and rejects bodies larger than 256 KiB, including chunked bodies that exceed the limit without a usable `Content-Length`.
+- `parseQuestionRequest()` accepts 1–20 user/assistant messages, at most 20 parts per message, at most 4,000 characters per text part, and at most 20,000 text characters in total. Non-text parts are discarded; messages with no retained text parts are removed. The final retained message must be a user message with nonblank text.
+- `getModelConfig()` and `getRagConfig()` run before the AI SDK stream is created. LangGraph requests additionally require `FASTAPI_BASE_URL` and `FASTAPI_INTERNAL_TOKEN`.
+- The route selects a backend only from server configuration and a server-created request ID. Client input cannot select a runner or widen access scope.
+- Invalid request bodies return HTTP 400 (`invalid_request`). Setup failures return HTTP 429 for quota errors or HTTP 500 (`internal_error`) without exposing configuration details. Before backend SSE bytes are consumed, backend failures fall back to AI SDK; after stream creation, failures are emitted through the existing stream error path.
 
-| File | Role |
-|------|------|
-| `app/api/question/route.ts` | Route handler, stream orchestration |
-| `lib/services/llm-provider.ts` | LLM provider factory (OpenRouter + OpenCode switching) |
-| `lib/services/rag-pipeline.ts` | `searchDocuments()` |
-| `lib/services/vector-store.ts` | Pinecone query, context formatting |
-| `lib/services/embedding.ts` | Embedding generation with LRU cache |
-| `lib/chat/pali-system-prompt.ts` | Pali expert role definition |
-| `lib/services/suggestions.ts` | Follow-up question generation |
+### Runner
 
-## Streaming Events
+`createAiSdkAgentTurnRunner()` owns model stages and turn policy:
 
-| Type | Purpose |
-|------|---------|
-| `data-task` | Tool status updates (`id` inside `data` for client dedup) |
-| `data-reasoning` | Search summary and excerpts for the user |
-| `data-suggestions` | Follow-up question suggestions |
-| (text) | LLM-generated answer tokens |
+1. Emit `run.started`, then call the structured `retrievalDecisionSchema` model stage. Retrieval is required for Pali language, grammar, vocabulary, translation, text, and Buddhist-concept questions. Only greetings, thanks, farewells, or chat-usage help that makes no Pali factual claim are eligible for the direct path.
+2. The direct path calls `draftDirectAnswer` without retrieval or citation IDs, optionally calls `generateSuggestions`, then emits `answer.completed`, `citations.completed` with an empty list, optional `suggestions.completed`, and `run.completed` (`answered`). Direct-answer policy says not to make unsupported Pali factual claims.
+3. The grounded path calls `retrieve({ query, attempt }, signal)` at most **two times**. If attempt one returns `insufficient-evidence`, `rewrite(...)` produces one bounded replacement query and attempt two runs. An unavailable embedding or vector store does not trigger a rewrite; it emits retrieval failure and completes as `retrieval-unavailable`.
+4. A grounded draft is generated against the accepted evidence envelope. `citationIds` must be nonempty and every ID must be in the accepted citation allow-list. Unknown or missing IDs trigger at most **one** `repairCitations` model call. A still-invalid draft emits `run.failed` with `invalid_citations`; validation is never weakened.
+5. Suggestions are an optional separate model stage after a validated answer. A non-abort suggestion error is swallowed and the answer remains successful. An abort is propagated and fails the run.
 
-## Environment Variables
+The implemented terminal outcomes are:
 
-| Variable | Required | Used By |
-|----------|----------|---------|
-| `PROVIDER_NAME` | No (default: `openrouter`) | Provider selection |
-| `OPENROUTER_API_KEY` / `OPENAI_API_KEY` | If OpenRouter | OpenRouter LLM calls |
-| `OPENROUTER_LLM_MODEL` / `LLM_MODEL` | No (has default) | Model selection |
-| `OPENCODE_API_KEY` | If OpenCode | OpenCode LLM calls |
-| `OPENCODE_LLM_MODEL` | No (has default) | Model selection |
-| `PINECONE_API_KEY` | Yes | Vector search |
-| `PINECONE_INDEX_NAME` | Yes | Vector search |
-| `PINECONE_NAMESPACE` | No | Vector namespace scoping |
+| Outcome | Meaning |
+| --- | --- |
+| `answered` | Direct answer completed, or grounded answer completed with validated citations. |
+| `insufficient-evidence` | The permitted retrieval attempts produced no accepted passages. |
+| `retrieval-unavailable` | Query embedding or Pinecone lookup was unavailable. The runner result carries `embedding_unavailable` or `vector_store_unavailable`; the stream reports the code on the failed retrieval task before the terminal outcome. |
+| `failed` | Cancellation, invalid citations after repair, quota, model, sink, or other runner failure. `run.failed` carries a code such as `aborted`, `invalid_citations`, `insufficient_quota`, or `runner_error` when available. |
+
+### Retriever
+
+`retrieve({ query, attempt }, signal)` owns query-time retrieval and returns a typed `GroundingBundle`:
+
+- `generateQueryEmbedding()` uses Pinecone inference model `llama-text-embed-v2`, `inputType: "query"`, and `truncate: "END"`. It has a process-local exact-string `LRUCache` keyed by model/input type/query, capped at 100 entries with a one-hour TTL.
+- `queryPinecone()` queries `PINECONE_NAMESPACE` (empty by default), requests `RAG_CANDIDATE_TOP_K` matches with metadata, and checks cancellation immediately before the paid query.
+- A match is discarded unless its vector ID, `text`, `source`, `title`, and `corpusRevision` metadata are nonempty and its corpus revision exactly equals `PINECONE_CORPUS_REVISION`. `section` is optional. A non-finite or non-number Pinecone score is **coerced to `0`**, not discarded; `RAG_MIN_SCORE` then determines whether it survives selection (so the default threshold `0` accepts it).
+- Candidates at or above `RAG_MIN_SCORE` are sorted by descending score with stable input-order ties. Duplicate vector IDs are removed after sorting, so the first (highest-scoring) copy wins. Selection stops at `RAG_ACCEPTED_TOP_K` or at the first passage that would exceed `RAG_MAX_CONTEXT_CHARS`; passage text is never cut and later passages are not considered after that budget break.
+- Accepted metadata and text are XML-escaped and wrapped in `<retrieved-passages corpus-revision="...">`. The grounding prompt labels this block as untrusted evidence data, not instructions, and supplies only the accepted vector IDs as the citation allow-list.
+- Empty/blank queries or zero accepted passages return `insufficient-evidence`. Embedding and vector-store exceptions return `unavailable` bundles with stable error codes; aborts are rethrown rather than converted to provider-unavailable results.
+
+### Cancellation
+
+The request signal is threaded route → runner → every AI SDK model stage → retriever. The runner checks between stages and after retrieval before starting the next paid stage. The retriever checks immediately before calling the embedding service and before calling Pinecone. Model calls receive `abortSignal`.
+
+The embedding and vector-store functions themselves do not accept a signal that can interrupt an already-started Pinecone operation. In particular, Pinecone SDK v6.1 query options have no `AbortSignal`; an in-flight embedding or query may finish after cancellation. If that happens, the runner checks the signal before generation or the next stage. Once cancellation is observed, the runner emits terminal `run.failed` with code `aborted`; no later model stage starts.
+
+## Events and streamed message parts
+
+The framework-neutral event vocabulary from `lib/agent/types.ts` is:
+
+- `run.started`
+- `retrieval.started`, `retrieval.completed`, `retrieval.failed`
+- `query.rewritten`
+- `generation.started`
+- `answer.completed`
+- `citations.completed`
+- `suggestions.completed`
+- `run.completed`, `run.failed`
+
+`createAiSdkEventSink()` validates every public data payload with the schemas in `lib/schemas/ai-data-parts.ts` before writing it:
+
+| Agent event / stream part | Current payload and UI purpose |
+| --- | --- |
+| `run.started` → `data-status` | `phase: "thinking"`. |
+| `retrieval.started` → `data-status` + `data-task` | `phase: "searching"`; task ID is `${runId}:retrieval:${attempt}`, status `running`, label `ค้นหาเอกสาร`, and the generated query. |
+| `retrieval.completed` → `data-task` + `data-reasoning` | Task becomes `done` with match count; reasoning is a bounded Thai summary. |
+| `retrieval.failed` → `data-task` | Active retrieval task becomes `error`; `message` is the stable error code. |
+| `query.rewritten` → `data-reasoning` | Bounded summary `ปรับคำค้นหาเพื่อค้นหาอีกครั้ง`; the rewritten query is not emitted in this reasoning part. |
+| `generation.started` → `data-status` | `phase: "answering"`. |
+| `answer.completed` → text start/delta/end | One text delta contains the completed answer; it is not token-by-token model streaming. |
+| `citations.completed` → `data-citations` | Validated citations with `id`, `source`, `title`, and optional `section`; direct answers send an empty list. |
+| `suggestions.completed` → `data-suggestions` | One to three follow-up questions. |
+| `run.completed` → `data-outcome` | `answered`, `insufficient-evidence`, or `retrieval-unavailable`; no failure code is attached. |
+| `run.failed` → `data-outcome` | `failed` with an optional stable code. |
+
+The event sink rejects writes after a terminal event and requires an active retrieval task for `retrieval.failed`. `createStructuredTraceSink()` records only event type, run ID, timestamp, attempt, match count, outcome, error code, and derived durations. It does not include prompts, questions, rewritten query text, passage bodies, answers, or suggestions in its trace records. The route currently sends those records to `console.info`; the repository does not define durable trace storage.
+
+### UI consumers
+
+`hooks/use-ai-chat.ts` uses `DefaultChatTransport({ api: "/api/question" })`, derives the visible phase from `data-status` and running task parts, and exposes `stop()` from `useChat` to cancel the request. `app/(home)/question/QuestionClient.tsx` renders user messages, `AIMessage`, `ChatStatus`, errors, stop/regenerate/clear controls, and selectable suggestions.
+
+`components/ai/ai-message.tsx` validates incoming reasoning/task/suggestion/citation/outcome parts again, reduces repeated task updates by task ID, renders answer text and citations, and maps terminal outcomes to UI messages. `failed` with code `aborted` intentionally renders no error message. `CitationList` only turns safe source paths into `/docs/...` links; unsafe paths remain plain text.
+
+## Configuration
+
+Configuration is parsed by `lib/config/model.ts` and `lib/config/rag.ts`. Missing required values, empty strings, unknown provider names, and values outside the listed ranges fail preflight.
+
+### Model provider
+
+| Variable | Requirement and default |
+| --- | --- |
+| `PROVIDER_NAME` | Optional only when absent; defaults to `openrouter`. Accepted values: `openrouter`, `opencode`. Empty or unknown values are invalid. |
+| `OPENROUTER_API_KEY` | Required and nonempty when `PROVIDER_NAME=openrouter`. |
+| `OPENROUTER_LLM_MODEL` | Required and nonempty when `PROVIDER_NAME=openrouter`; no built-in model default. |
+| `OPENCODE_API_KEY` | Required and nonempty when `PROVIDER_NAME=opencode`. |
+| `OPENCODE_LLM_MODEL` | Required and nonempty when `PROVIDER_NAME=opencode`; no built-in model default. |
+
+`lib/services/llm-provider.ts` maps OpenRouter to `https://openrouter.ai/api/v1` and OpenCode to `https://opencode.ai/zen/go/v1`, using the selected model ID.
+
+### RAG and retrieval policy
+
+| Variable | Requirement and default |
+| --- | --- |
+| `PINECONE_API_KEY` | Required, nonempty. |
+| `PINECONE_INDEX_NAME` | Required, nonempty. |
+| `PINECONE_NAMESPACE` | Optional; defaults to the empty/default namespace. |
+| `PINECONE_CORPUS_REVISION` | Required, nonempty revision used to accept matching passage metadata and label grounding context. |
+| `RAG_CANDIDATE_TOP_K` | Integer 1–50; default `20`. |
+| `RAG_ACCEPTED_TOP_K` | Integer 1–12; default `8`. |
+| `RAG_MIN_SCORE` | Number 0–1; default `0`. |
+| `RAG_MAX_CONTEXT_CHARS` | Integer 1,000–50,000; default `12000`. |
+
+
+## Safe rollout and rollback
+
+The route selects the backend per request using these environment controls:
+
+| Control | Operational meaning |
+| --- | --- |
+| `RAG_BACKEND=ai-sdk` | Explicit safe rollback. Every request uses the known-good AI SDK path, regardless of the traffic percentage. |
+| `RAG_BACKEND=langgraph` | Explicit preview mode. Every request attempts the FastAPI/LangGraph backend; use only for controlled preview traffic while the comparison and live gates remain incomplete. |
+| `RAG_BACKEND` absent | Uses `RAG_LANGGRAPH_TRAFFIC_PERCENT`. The server creates a request ID and assigns each request deterministically to AI SDK or LangGraph from that ID. |
+| `RAG_LANGGRAPH_TRAFFIC_PERCENT` | Integer percentage from `0` through `100` used only when `RAG_BACKEND` is absent. Missing or invalid values fail closed to `0`, so requests use AI SDK. |
+
+LangGraph backend calls require both `FASTAPI_BASE_URL` and `FASTAPI_INTERNAL_TOKEN`. Before any backend SSE bytes are consumed, missing configuration, a request error, a non-success status, or a non-SSE response falls back to AI SDK for that request. After the LangGraph stream has started, stream failures are surfaced as stream errors and are not retried through AI SDK; this prevents duplicate model calls and inconsistent answers. To roll back, set `RAG_BACKEND=ai-sdk` and redeploy or restart the affected service. To preview, set `RAG_BACKEND=langgraph` only in the isolated preview environment, verify the backend credentials, and remove the override before percentage-based rollout.
+
+## Pinecone ingestion and rollout prerequisite
+
+This repository owns the query-time application path, not the production Pinecone ingestion pipeline. To produce citation-safe retrieval, the external ingestion owner must publish a complete index build whose chunks have nonempty `text`, stable authoritative `source`, human-readable `title`, optional `section`, and metadata `corpusRevision` matching one immutable `PINECONE_CORPUS_REVISION`. Indexed passages must use Pinecone `inputType: "passage"` while this runtime uses `inputType: "query"` for searches, and the evaluation owner needs the authoritative source-ID mapping.
+
+The application can reject records with missing or mismatched metadata, but it cannot repair externally ingested records or invent source IDs. The repository does not contain ingestion code, a production-index inspection, or an application check that proves the external index used `inputType: "passage"`; those rollout facts must be verified outside this query path. Any traffic rollout also needs an abuse budget and distributed rate limit appropriate for the two-attempt retrieval policy.
+
+### Paired rollout comparison
+
+Run the paired AI SDK/LangGraph comparison through the root command:
+
+```bash
+just compare-rag
+```
+
+This command fails closed before runner creation or network calls until `data/rag-eval-cases.json` has an authoritative corpus revision, an outcome-accuracy baseline, and the reviewed evaluation cases required by the readiness gate. The checked-in manifest is intentionally incomplete, so a nonzero result from `just compare-rag` is expected at present. Do not fabricate corpus revisions, baselines, source IDs, or reviewed cases to make the comparison pass.
+
+
+## Evaluation gate
+
+Run the production-path evaluator with:
+
+```bash
+bun run eval:rag
+```
+
+`scripts/evaluate-rag.ts` parses `data/rag-eval-cases.json` and fails closed before `getRagConfig()`, model configuration, or paid/external calls when the manifest is incomplete or does not meet readiness checks. A ready manifest requires at least 30 cases and these minimum cohorts: 10 Thai single-source, 5 English single-source, 5 multi-source, 5 paraphrase/terminology, 3 insufficient-evidence, and 2 retrieved-prompt-injection cases. Grounded cases need authoritative expected source IDs; the manifest also supplies a non-null corpus revision and outcome-accuracy baseline.
+
+The evaluator requires the manifest revision to equal `PINECONE_CORPUS_REVISION`, supports only `RAG_EVAL_RUNNER=ai-sdk` (the default), and writes timestamped JSONL to `RAG_EVAL_OUTPUT_DIR` (default `results/rag-evaluation`). It runs the production AI SDK runner and retriever, records expected/retrieved/cited **source IDs**, outcomes, retrieval-attempt count, model ID, corpus revision, and total/retrieval/generation timings. It does not record vector IDs, raw prompts, rewritten queries, passage bodies, questions, answers, suggestions, or citation titles/sections.
+
+`actualOutcome` is `grounded` only when an `answered` result has at least one citation and every cited source is among observed accepted source IDs; an `answered` result without such citations is recorded as `unsupported-answer`. Gate violations include outcome accuracy below baseline, citation precision below 1.0, unsupported answers, more than two retrieval attempts, citations outside accepted evidence, or forbidden citations. Any violation sets a nonzero process exit code. The checked-in `data/rag-eval-cases.json` is currently `status: "incomplete"`, so the evaluation gate is not runnable against a production corpus yet.
+
+## Readiness status
+
+The route, AI SDK runner, retriever, event adapter, UI data-part handling, and fail-closed evaluator are implemented in application code. Production citation rollout and a ready evaluation baseline remain blocked on external ingestion, authoritative source IDs, and a matching immutable corpus revision. The source set does not establish whether a real-browser smoke run has occurred; that is an operational verification question, not a runtime fallback.
+
+## Key files
+
+| File | Responsibility |
+| --- | --- |
+| `app/api/question/route.ts` | HTTP validation, configuration preflight, stream construction, and cancellation handoff. |
+| `lib/schemas/question-request.ts` | Raw-body size and message/text bounds plus final-user validation. |
+| `lib/agent/ai-sdk-runner.ts` | Retrieval decision, direct path, two-attempt loop, answer stages, citation repair, suggestions, and outcomes. |
+| `lib/agent/types.ts` | Framework-neutral runner, result, and event contracts. |
+| `lib/agent/ai-sdk-event-sink.ts` | Validated projection from agent events to AI SDK UI message parts. |
+| `lib/agent/structured-trace-sink.ts` | Content-free lifecycle and timing records. |
+| `lib/rag/retriever.ts` | Retrieval selection policy and safe evidence-envelope construction. |
+| `lib/services/embedding.ts` | Pinecone query embedding and process-local embedding cache. |
+| `lib/services/vector-store.ts` | Pinecone lookup, metadata/revision filtering, and score normalization. |
+| `lib/config/model.ts` | Provider-specific model configuration. |
+| `lib/config/rag.ts` | Pinecone and retrieval-policy configuration. |
+| `hooks/use-ai-chat.ts` | AI SDK transport, phase derivation, cancellation, and client error handling. |
+| `components/ai/ai-message.tsx` | Stream-part validation and answer/process/citation/outcome rendering. |
+| `scripts/evaluate-rag.ts` | Fail-closed production runner/retriever evaluation CLI. |
+| `lib/rag/evaluation.ts` | Manifest readiness checks, aggregate metrics, and gate violations. |
+| `data/rag-eval-cases.json` | Evaluation manifest; currently incomplete pending external corpus/source data. |
+| `components/ai/citation-list.tsx` | Citation rendering and safe `/docs/...` link derivation. |
+| `components/ai/chat-status.tsx` | Visible thinking/searching/answering phase indicator. |

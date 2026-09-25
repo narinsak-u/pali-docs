@@ -97,42 +97,38 @@ Read the [Introduction](https://fumadocs.dev/docs/mdx) for further details.
 
 ### 💬 RAG Chat — Ask Questions About Pali Grammar
 
-Got a question about Pali grammar? The AI chat searches the textbook corpus and answers with relevant references — like having a Pali scholar right beside you.
+Got a question about Pali grammar? The AI chat searches the textbook corpus and answers with validated references — like having a Pali scholar right beside you.
 
 ![Chat screenshot](/public/chat_screenshot.png)
 
-Here's how it works under the hood:
+The implemented flow has three explicit boundaries:
 
-```
-You ask a question
-    │
+```text
+POST /api/question
+    │ validate a bounded raw body, preflight config, start the UI stream
     ▼
-LLM decides to search ──► searchDocs tool
-    │                           │
-    │                     generateEmbedding(query)
-    │                           │
-    │                     queryPinecone(vector)
-    │                           │
-    │                     formatContext(matches)
-    │                           │
-    ▼                           ▼
-prepareStep injects context into system prompt
-    │
+AgentTurnRunner
+    │ classify the turn; answer directly or make at most two retrieval attempts
     ▼
-LLM responds with grounded answer + follow-up suggestions
+Retriever
+    │ query embedding → Pinecone candidates → validated, budgeted evidence
+    ▼
+AgentTurnRunner
+    │ grounded draft → citation validation → at most one citation repair
+    ▼
+text + citations + optional suggestions + terminal outcome
 ```
 
-**🔧 Key components:**
-- **`app/api/question/route.ts`** — Route handler orchestrating the stream
-- **`lib/services/rag-pipeline.ts`** — `searchDocuments()` (embed → query → format)
-- **`lib/services/vector-store.ts`** — Pinecone query & context formatting
-- **`lib/services/embedding.ts`** — Text embedding via Pinecone inference (LRU-cached)
-- **`lib/chat/pali-system-prompt.ts`** — Pali expert role definition
+The runner reports `answered`, `insufficient-evidence`, `retrieval-unavailable`, or `failed` explicitly. Grounded answers can cite only accepted Pinecone passages; missing or invented citation IDs are never silently accepted. The request cancellation signal is passed from the route through model and retrieval stages.
 
-**✨ Highlights:**
-- 🧠 Smart search — Pinecone is called only once per question, cached for follow-ups
-- 🔧 Up to 5 tool-calling steps for DeepSeek compatibility
-- 💡 Suggests 3 follow-up questions after every answer
+**Key components:**
+- **`app/api/question/route.ts`** — HTTP validation, configuration preflight, stream construction, and cancellation handoff
+- **`lib/agent/ai-sdk-runner.ts`** — retrieval decision, two-attempt loop, generation, citation repair, and outcomes
+- **`lib/agent/ai-sdk-event-sink.ts`** — projection to validated AI SDK data/text parts
+- **`lib/rag/retriever.ts`** — retrieval policy and safe evidence construction
+- **`lib/services/vector-store.ts`** — Pinecone lookup and citation-safe metadata mapping
+
+The application path is implemented. Production citation rollout is externally blocked until the ingestion owner publishes citation-safe metadata, authoritative source IDs, and an immutable corpus revision. See [Chat RAG Workflow](./docs/RAG-WORKFLOW.md) for the complete contract and current readiness status.
 
 ### 📝 AI Quiz — Test Your Knowledge
 
@@ -174,147 +170,64 @@ Quiz appears with timer, pagination, and results
 
 ## 🚀 Getting Started for Contributors
 
-### 1️⃣ Sign Up for Services
+### 1️⃣ Service prerequisites
 
-You'll need these free accounts to run the AI features:
+| Service | Used for | Required configuration |
+| --- | --- | --- |
+| **Pinecone** | RAG query embeddings and vector retrieval | API key, index, optional namespace, and a verified corpus revision |
+| **OpenRouter** or **OpenCode** | Chat and quiz model calls | Selected provider's API key and model ID |
+| **Algolia** | Documentation full-text search | Application ID, public search key, and server-only admin key |
 
-| Service | What It's For | How to Get |
-|---------|--------------|------------|
-| 🗄️ **Pinecone** | Vector DB for RAG chat search | [Sign up](https://www.pinecone.io) → Create index (dimension: `1024`, metric: `cosine`) → Grab API key |
-| 🤖 **OpenRouter** or **OpenCode** | LLM provider | Pick one → [openrouter.ai](https://openrouter.ai) or [opencode.ai](https://opencode.ai) → Create API key |
-| 🔍 **Algolia** | Full-text search for docs | [Sign up](https://www.algolia.com) → Create app → Get search & admin keys |
+`PROVIDER_NAME` accepts `openrouter` or `opencode` and defaults to `openrouter` only when it is absent. The selected provider's API key and model ID are required; model IDs have no built-in defaults. Copy `.env.example` to `apps/web/.env.local` for the complete variable list and exact retrieval defaults.
 
-### 2️⃣ Set Up the Vector Database (for RAG Chat only)
+### 2️⃣ Pinecone ingestion contract
 
-The quiz feature doesn't need Pinecone — it uses `data/quiz-content.json`. But the RAG chat needs textbook content indexed in Pinecone first.
+The quiz feature reads `data/quiz-content.json` and does not need Pinecone. RAG chat requires an externally ingested Pinecone corpus. This repository contains the query-time application, not the production Pinecone ingestion pipeline.
 
-**Option A — HuggingFace Dataset:**
-```
-1. Find a Pali textbook dataset on HuggingFace
-2. Load it with:
-   from datasets import load_dataset
-   dataset = load_dataset("your-org/pali-textbooks")
-```
+Each indexed chunk must have:
 
-**Option B — Local MDX Content (current approach):**
-```
-The project uses Fumadocs MDX files in content/docs/ as the source.
-The static.json endpoint extracts content at build time for Algolia.
-For Pinecone you'll need a separate upsert script.
-```
+- a nonempty vector ID;
+- nonempty `text`, stable authoritative `source`, and human-readable `title` metadata;
+- optional `section` metadata; and
+- revision metadata matching one immutable `PINECONE_CORPUS_REVISION` for the complete index build.
 
-### 3️⃣ Process Data Through the Pipeline
+Passages must be embedded with `llama-text-embed-v2` and Pinecone `inputType: "passage"`. Runtime searches use the same model with `inputType: "query"`. The ingestion owner must also provide the authoritative `source`-ID mapping for evaluation. Do not invent source IDs or weaken citation validation when metadata is missing.
 
-```
-Raw Text → Clean → Chunk → Embed → Upsert to Pinecone
-```
+Before enabling the two-attempt retrieval flow for unrestricted production traffic, deployment also requires an authenticated-user or platform abuse budget and a distributed rate limit for `/api/question`.
 
-**a) 🧹 Cleaning** — Strip artifacts, normalize Unicode:
-```
-- Remove HTML/markdown leftovers
-- Normalize Thai/Pali characters (NFKC)
-- Drop empty or near-empty segments
-```
-
-**b) ✂️ Chunking** — Split into searchable pieces:
-```
-- Aim for 500-1000 character chunks with 100-char overlap
-- Respect paragraph boundaries when splitting
-- Keep document title/source metadata with each chunk
-```
-
-**c) 🧠 Embedding** — Convert text to vectors:
-
-| Model | Provider | Dimensions | Used For |
-|-------|----------|------------|----------|
-| `llama-text-embed-v2` | Pinecone Inference API | 1024 | RAG context retrieval (chat only) |
-
-```ts
-const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
-const result = await pc.inference.embed("llama-text-embed-v2", [text], {
-  inputType: "passage",
-  truncate: "END",
-});
-```
-
-**d) 📤 Upsert to Pinecone:**
-
-```ts
-await index.namespace("your-namespace").upsert([
-  {
-    id: "doc-1-chunk-0",
-    values: embeddingVector,
-    metadata: { text: "...", source: "...", title: "..." },
-  },
-]);
-```
-
-> **Note:** There's no built-in Pinecone upsert script yet. You'll need to write one following the pattern above.
-
-### 4️⃣ Choose Your LLM
-
-Set `PROVIDER_NAME` to pick your backend (`openrouter` or `opencode`, default: `openrouter`).
-
-| Feature | Default Model |
-|---------|--------------|
-| 🗣️ **RAG Chat** | Configurable per provider |
-| 📝 **Quiz Generation** | Configurable per provider |
-
-| Provider | Env Var | Default Model |
-|----------|---------|---------------|
-| OpenRouter | `OPENROUTER_LLM_MODEL` | `google/gemma-3-27b-it:free` |
-| OpenCode | `OPENCODE_LLM_MODEL` | `deepseek-v4-flash` |
-
-Both use `createOpenAICompatible` from `@ai-sdk/openai-compatible` (see `lib/services/llm-provider.ts`).
-
-### 5️⃣ Configure Environment
-
-Copy `.env.example` → `.env.local`:
-
-```env
-# 🤖 LLM Provider (pick one - openrouter (free or pay-as-you-go), and opencode (need to subscribe Go at least)
-PROVIDER_NAME=openrouter   # or "opencode"
-
-# Option A: OpenRouter
-OPENROUTER_API_KEY=sk-or-v1-...
-OPENROUTER_LLM_MODEL=google/gemma-3-27b-it:free
-
-# Option B: OpenCode
-OPENCODE_API_KEY=sk-...
-OPENCODE_LLM_MODEL=deepseek-v4-flash
-
-# 🗄️ Pinecone (needed for RAG Chat, NOT for Quiz)
-PINECONE_API_KEY=pcsk_...
-PINECONE_INDEX_NAME=pali-docs
-PINECONE_NAMESPACE=textbooks
-
-# 🔍 Algolia (full-text search)
-NEXT_PUBLIC_ALGOLIA_APP_ID=...
-NEXT_PUBLIC_ALGOLIA_SEARCH_API_KEY=...
-ALGOLIA_API_KEY=...
-ALGOLIA_INDEX_NAME=pali_docs
-```
-
-### 6️⃣ Run Indexing
+### 3️⃣ Environment
 
 ```bash
-# Build first (generates static.json)
+cp .env.example apps/web/.env.local
+```
+
+The RAG route validates model and Pinecone configuration before committing its stream. Required RAG values are `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, and `PINECONE_CORPUS_REVISION`; `PINECONE_NAMESPACE` defaults to the default namespace. Retrieval policy defaults are documented in `.env.example` and `docs/RAG-WORKFLOW.md`.
+
+### 4️⃣ Build and Algolia indexing
+
+```bash
 bun run build
-
-# Sync to Algolia
-bun run index
-
-# For Pinecone: run your own upsert script
-bun scripts/upsert-pinecone.mjs
 ```
 
-### 7️⃣ Start Developing
+`bun run build` runs the Next.js production build and then `scripts/update-index.mjs`. That script updates the Algolia `docs` index only; it never updates Pinecone. It requires `NEXT_PUBLIC_ALGOLIA_APP_ID` and the server-only `ALGOLIA_ADMIN_API_KEY`. After a build, `bun run index` can repeat the Algolia sync from generated output.
+
+### 5️⃣ RAG evaluation
 
 ```bash
-bun run dev          # Dev server with Turbopack
-bun test             # Watch mode tests
-bun run test:run     # Run all tests once
-bunx vitest run tests/route.test.ts  # Single test
+bun run eval:rag
+```
+
+The evaluator uses the production AI SDK runner and retriever. It fails closed while `data/rag-eval-cases.json` is incomplete and performs no paid or external calls in that state. A runnable manifest requires at least 30 reviewed cases, the required cohort mix, authoritative source IDs for grounded cases, a corpus revision matching `PINECONE_CORPUS_REVISION`, and a checked-in outcome baseline.
+
+Application code for the route, runner, retriever, event adapter, and evaluation gate is complete. Real browser smoke, the authoritative 30-case baseline, and production citation rollout remain blocked until compliant re-ingestion publishes authoritative source IDs and `PINECONE_CORPUS_REVISION`.
+
+### 6️⃣ Start developing
+
+```bash
+bun run dev                       # Development server with Turbopack
+bun test                          # Vitest watch mode
+bun run test:run                  # Run all tests once
+bunx vitest run tests/route.test.ts
 ```
 
 ## 📚 Learn More
