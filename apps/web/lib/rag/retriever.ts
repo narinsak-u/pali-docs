@@ -205,6 +205,9 @@ export async function retrieve(
     };
   }
 
+  const candidateCount = candidates.length;
+  let rerankerUsed = false;
+
   if (config.RAG_RERANKER_ENABLED) {
     const denseCandidates = candidates;
     try {
@@ -216,13 +219,18 @@ export async function retrieve(
         dependencies.rerankCandidates ?? rerankCandidates,
         signal,
       );
-      candidates = isValidReranked(
-        denseCandidates,
-        reranked,
-        config.RAG_RERANKER_MAX_CANDIDATES,
-      )
-        ? reranked
-        : denseCandidates;
+      if (
+        isValidReranked(
+          denseCandidates,
+          reranked,
+          config.RAG_RERANKER_MAX_CANDIDATES,
+        )
+      ) {
+        candidates = reranked;
+        rerankerUsed = true;
+      } else {
+        candidates = denseCandidates;
+      }
     } catch {
       signal?.throwIfAborted();
       candidates = denseCandidates;
@@ -236,7 +244,7 @@ export async function retrieve(
     config.RAG_MAX_CONTEXT_CHARS,
     config.PINECONE_CORPUS_REVISION,
     config.RAG_HIERARCHY_EXPANSION,
-    config.RAG_RERANKER_ENABLED,
+    rerankerUsed,
   );
 
   if (!selected) {
@@ -246,6 +254,12 @@ export async function retrieve(
       corpusRevision: config.PINECONE_CORPUS_REVISION,
       passages: [],
       citations: [],
+      retrievalMetrics: {
+        candidateCount,
+        acceptedCount: 0,
+        hierarchyExpansion: config.RAG_HIERARCHY_EXPANSION,
+        rerankerUsed,
+      },
     };
   }
 
@@ -256,5 +270,11 @@ export async function retrieve(
     passages: selected.passages,
     citations: selected.passages.map(toCitation),
     context: selected.context,
+    retrievalMetrics: {
+      candidateCount,
+      acceptedCount: selected.passages.length,
+      hierarchyExpansion: config.RAG_HIERARCHY_EXPANSION,
+      rerankerUsed,
+    },
   };
 }

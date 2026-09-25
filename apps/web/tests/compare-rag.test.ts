@@ -5,9 +5,11 @@ import type {
 import { runEvaluationCase } from "@/scripts/evaluate-rag";
 import {
   assertComparisonReady,
+  compareAggregates,
   compareRecords,
   createFastApiRunner,
 } from "@/scripts/compare-rag";
+import { aggregateEvaluation } from "@/lib/rag/evaluation";
 import type { RagEvaluationRecord } from "@/lib/rag/evaluation";
 import { describe, expect, it, vi } from "vitest";
 
@@ -124,22 +126,36 @@ describe("paired deltas", () => {
     expectedOutcome: "grounded",
     actualOutcome: "grounded",
     expectedSourceIds: ["source-a", "source-b"],
-    forbiddenSourceIds: [],
     retrievedSourceIds: ["source-a", "source-b"],
-    citationSourceIds: ["source-a"],
+    citationSourceIds: ["source-a", "source-b"],
     retrievalAttempts: 1,
     latencyMs: { total: 100, retrieval: 40, generation: 60 },
+    candidateCount: 4,
+    acceptedCount: 2,
+    hierarchyExpansion: false,
+    rerankerUsed: false,
+    sourceRecall: 1,
+    citationPrecision: 0.5,
+    citationCompleteness: 0.5,
+    cost: 0.01,
     ...overrides,
   });
 
-  it("calculates LangGraph minus AI SDK latency and citation metric deltas", () => {
+  it("calculates LangGraph minus AI SDK retrieval and citation deltas", () => {
     const comparison = compareRecords(
       record(),
       record({
         runner: "langgraph",
         actualOutcome: "insufficient-evidence",
         citationSourceIds: ["source-a", "other"],
+        candidateCount: 4,
+        acceptedCount: 2,
+        sourceRecall: 1,
+        citationPrecision: 0,
+        citationCompleteness: 0.5,
         latencyMs: { total: 125, retrieval: 50, generation: 75 },
+        tokenUse: undefined,
+        cost: undefined,
       }),
     );
     expect(comparison).toMatchObject({
@@ -147,9 +163,40 @@ describe("paired deltas", () => {
       deltas: {
         latencyMs: 25,
         outcomeChanged: true,
+        candidateCount: 0,
+        acceptedCount: 0,
+        sourceRecall: 0,
         citationPrecision: -0.5,
-        citationCompleteness: 0,
+        citationCompleteness: -0.5,
+        cost: null,
       },
+    });
+  });
+
+  it("reports deterministic aggregate deltas for quality configurations", () => {
+    const baseline = aggregateEvaluation([record()]);
+    const candidate = aggregateEvaluation([
+      record({
+        candidateCount: 8,
+        acceptedCount: 1,
+        retrievedSourceIds: ["source-a"],
+        citationSourceIds: ["source-a"],
+        hierarchyExpansion: true,
+        rerankerUsed: true,
+        latencyMs: { total: 125, retrieval: 50, generation: 75 },
+        tokenUse: undefined,
+        cost: undefined,
+      }),
+    ]);
+
+    expect(compareAggregates(baseline, candidate)).toMatchObject({
+      candidateCount: 4,
+      acceptedCount: -1,
+      sourceRecall: -0.5,
+      citationCompleteness: -0.5,
+      latencyMs: 25,
+      tokenUse: null,
+      cost: null,
     });
   });
 });

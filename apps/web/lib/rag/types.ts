@@ -16,6 +16,13 @@ export interface GroundingPassage extends Citation {
   parentId?: string;
 }
 
+export interface RetrievalMetrics {
+  candidateCount: number;
+  acceptedCount: number;
+  hierarchyExpansion: boolean;
+  rerankerUsed: boolean;
+}
+
 export type GroundingBundle =
   | {
       status: "grounded";
@@ -24,6 +31,7 @@ export type GroundingBundle =
       passages: GroundingPassage[];
       citations: Citation[];
       context: string;
+      retrievalMetrics?: RetrievalMetrics;
     }
   | {
       status: "insufficient-evidence";
@@ -31,6 +39,7 @@ export type GroundingBundle =
       corpusRevision: string;
       passages: [];
       citations: [];
+      retrievalMetrics?: RetrievalMetrics;
     }
   | {
       status: "unavailable";

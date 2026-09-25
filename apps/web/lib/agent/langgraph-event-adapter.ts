@@ -38,6 +38,10 @@ const retrievalCompletedPayloadSchema = z
     attempt: z.number().int().positive(),
     matchCount: z.number().int().nonnegative(),
     acceptedSourceIds: z.array(z.string().min(1)).optional(),
+    candidateCount: z.number().int().nonnegative().optional(),
+    acceptedCount: z.number().int().nonnegative().optional(),
+    hierarchyExpansion: z.boolean().optional(),
+    rerankerUsed: z.boolean().optional(),
   })
   .strict();
 const codePayloadSchema = z.object({ runId: z.string().min(1), code: z.string().min(1) }).strict();
@@ -102,6 +106,18 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
         ...(payload.acceptedSourceIds === undefined
           ? {}
           : { acceptedSourceIds: payload.acceptedSourceIds }),
+        ...(payload.candidateCount === undefined
+          ? {}
+          : { candidateCount: payload.candidateCount }),
+        ...(payload.acceptedCount === undefined
+          ? {}
+          : { acceptedCount: payload.acceptedCount }),
+        ...(payload.hierarchyExpansion === undefined
+          ? {}
+          : { hierarchyExpansion: payload.hierarchyExpansion }),
+        ...(payload.rerankerUsed === undefined
+          ? {}
+          : { rerankerUsed: payload.rerankerUsed }),
       };
     }
     case "retrieval.failed": {

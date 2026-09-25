@@ -15,6 +15,7 @@ from .types import (
     GroundingBundle,
     GroundingPassage,
     InsufficientEvidenceBundle,
+    RetrievalMetrics,
     UnavailableBundle,
 )
 from .reranker import rerank_candidates
@@ -171,6 +172,9 @@ class PineconeRetriever:
                 error_code="vector_store_unavailable",
             )
 
+        candidate_count = len(candidates)
+        reranker_used = False
+
         if config.RAG_RERANKER_ENABLED:
             dense_candidates = candidates
             try:
@@ -189,14 +193,23 @@ class PineconeRetriever:
                     config.RAG_RERANKER_MAX_CANDIDATES,
                 ):
                     candidates = reranked
+                    reranker_used = True
             except Exception:
                 candidates = dense_candidates
 
         selected = self._select_passages(
-            candidates, preserve_order=config.RAG_RERANKER_ENABLED
+            candidates, preserve_order=reranker_used
         )
         if selected is None:
-            return self._insufficient(normalized_query)
+            return self._insufficient(
+                normalized_query,
+                RetrievalMetrics(
+                    candidate_count=candidate_count,
+                    accepted_count=0,
+                    hierarchy_expansion=config.RAG_HIERARCHY_EXPANSION,
+                    reranker_used=reranker_used,
+                ),
+            )
 
         passages, context = selected
         return GroundedBundle(
@@ -214,6 +227,12 @@ class PineconeRetriever:
                 for passage in passages
             ],
             context=context,
+            retrieval_metrics=RetrievalMetrics(
+                candidate_count=candidate_count,
+                accepted_count=len(passages),
+                hierarchy_expansion=config.RAG_HIERARCHY_EXPANSION,
+                reranker_used=reranker_used,
+            ),
         )
 
     async def _off_loop(self, function: Callable[..., Any], *args: Any) -> Any:
@@ -368,11 +387,16 @@ class PineconeRetriever:
             return None
         return accepted, f"{header}\n" + "\n".join(formatted) + f"\n{footer}"
 
-    def _insufficient(self, query: str) -> InsufficientEvidenceBundle:
+    def _insufficient(
+        self,
+        query: str,
+        retrieval_metrics: RetrievalMetrics | None = None,
+    ) -> InsufficientEvidenceBundle:
         return InsufficientEvidenceBundle(
             status="insufficient-evidence",
             query=query,
             corpus_revision=self.settings.PINECONE_CORPUS_REVISION,
             passages=[],
             citations=[],
+            retrieval_metrics=retrieval_metrics,
         )

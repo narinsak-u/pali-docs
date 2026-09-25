@@ -154,8 +154,8 @@ describe("retrieve", () => {
       RAG_RERANKER_TIMEOUT_MS: 1,
     });
     mockedQuery.mockResolvedValue([
-      passage("score-first", 0.9, { text: "grammar lesson" }),
       passage("term-match", 0.7, { text: "dhamma grammar" }),
+      passage("score-first", 0.9, { text: "grammar lesson" }),
     ]);
     const rerankCandidates = vi.fn(
       () => new Promise<GroundingPassage[]>(() => undefined),
@@ -178,8 +178,8 @@ describe("retrieve", () => {
   it("falls back to dense ordering when reranker returns incomplete output", async () => {
     Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
     mockedQuery.mockResolvedValue([
-      passage("score-first", 0.9, { text: "grammar lesson" }),
       passage("term-match", 0.7, { text: "dhamma grammar" }),
+      passage("score-first", 0.9, { text: "grammar lesson" }),
     ]);
     const rerankCandidates = vi.fn(async () => []);
 
@@ -319,6 +319,12 @@ describe("retrieve", () => {
       corpusRevision: "corpus-2026-09-18",
       passages: [],
       citations: [],
+      retrievalMetrics: {
+        candidateCount: 1,
+        acceptedCount: 0,
+        hierarchyExpansion: false,
+        rerankerUsed: false,
+      },
     });
   });
 

@@ -313,7 +313,12 @@ async def retrieve_node(state: AgentGraphState, config: object) -> dict[str, obj
             "events": [],
         }
 
-    match_count = len(bundle.passages) if bundle.status == "grounded" else 0
+    metrics = bundle.retrieval_metrics
+    match_count = (
+        metrics.candidate_count
+        if metrics is not None
+        else len(bundle.passages) if bundle.status == "grounded" else 0
+    )
     accepted_source_ids = (
         [passage.source for passage in bundle.passages]
         if bundle.status == "grounded"
@@ -330,6 +335,16 @@ async def retrieve_node(state: AgentGraphState, config: object) -> dict[str, obj
                 attempt=attempt,
                 matchCount=match_count,
                 acceptedSourceIds=accepted_source_ids,
+                **(
+                    {
+                        "candidateCount": metrics.candidate_count,
+                        "acceptedCount": metrics.accepted_count,
+                        "hierarchyExpansion": metrics.hierarchy_expansion,
+                        "rerankerUsed": metrics.reranker_used,
+                    }
+                    if metrics is not None
+                    else {}
+                ),
             ),
         ],
     }

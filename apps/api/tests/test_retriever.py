@@ -199,8 +199,8 @@ async def test_retriever_falls_back_to_dense_order_when_reranker_fails() -> None
         embedder=lambda _query: [0.1],
         query_fn=lambda *_args: {
             "matches": [
-                match("score-first", score=0.9, text="grammar lesson"),
                 match("term-match", score=0.7, text="dhamma grammar"),
+                match("score-first", score=0.9, text="grammar lesson"),
             ],
         },
         rerank_fn=rerank_fn,

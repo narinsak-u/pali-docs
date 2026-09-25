@@ -23,6 +23,13 @@ class GroundingPassage(Citation):
     text: str
     score: float
     parent_id: str | None = field(default=None, kw_only=True)
+@dataclass(frozen=True, slots=True)
+class RetrievalMetrics:
+    candidate_count: int
+    accepted_count: int
+    hierarchy_expansion: bool
+    reranker_used: bool
+
 
 @dataclass(frozen=True, slots=True)
 class GroundedBundle:
@@ -32,7 +39,7 @@ class GroundedBundle:
     passages: list[GroundingPassage]
     citations: list[Citation]
     context: str
-
+    retrieval_metrics: RetrievalMetrics | None = None
 
 @dataclass(frozen=True, slots=True)
 class InsufficientEvidenceBundle:
@@ -41,7 +48,7 @@ class InsufficientEvidenceBundle:
     corpus_revision: str
     passages: list[GroundingPassage]
     citations: list[Citation]
-
+    retrieval_metrics: RetrievalMetrics | None = None
 
 @dataclass(frozen=True, slots=True)
 class UnavailableBundle:

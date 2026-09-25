@@ -37,6 +37,15 @@ function record(
       retrieval: 40,
       generation: 60,
     },
+    candidateCount: 4,
+    acceptedCount: 2,
+    hierarchyExpansion: false,
+    rerankerUsed: false,
+    sourceRecall: 1,
+    citationPrecision: 1,
+    citationCompleteness: 1,
+    tokenUse: 120,
+    cost: 0.01,
     ...overrides,
   };
 }
@@ -206,6 +215,30 @@ describe("RAG evaluation manifest safeguards", () => {
     );
   });
 
+  it("rejects unsupported outcomes, revision mismatches, and configured regressions", () => {
+    const records = [
+      record({
+        actualOutcome: "not-supported" as RagEvaluationRecord["actualOutcome"],
+        corpusRevision: "corpus-old",
+        retrievedSourceIds: ["source-a"],
+        sourceRecall: 0.5,
+      }),
+    ];
+
+    const violations = evaluateGates(
+      records,
+      aggregateEvaluation(records),
+      { outcomeAccuracy: 0, sourceRecall: 1 },
+      "corpus-current",
+    );
+    expect(violations).toEqual([
+      "source recall 0.500 is below baseline 1.000",
+      "case case-1 has an unsupported outcome: not-supported",
+      "case case-1 uses corpus revision corpus-old instead of corpus-current",
+      "case case-1 emitted citations outside accepted evidence: source-b",
+    ]);
+  });
+
   it("rejects a ready manifest without 30 reviewed cases", () => {
     const manifest = parseEvaluationManifest({
       schemaVersion: 1,
@@ -246,7 +279,6 @@ describe("RAG evaluation records", () => {
   it("uses the runner contract while omitting prompts, answers, and passage bodies", async () => {
     const runner: AgentTurnRunner = {
       async runTurn(input, sink) {
-        sink.emit({ type: "run.started", runId: input.runId });
         sink.emit({
           type: "retrieval.started",
           runId: input.runId,
@@ -257,7 +289,12 @@ describe("RAG evaluation records", () => {
           type: "retrieval.completed",
           runId: input.runId,
           attempt: 1,
-          matchCount: 1,
+          matchCount: 4,
+          acceptedSourceIds: ["source-a"],
+          candidateCount: 4,
+          acceptedCount: 1,
+          hierarchyExpansion: true,
+          rerankerUsed: true,
         });
         sink.emit({ type: "generation.started", runId: input.runId });
         return {
@@ -300,6 +337,13 @@ describe("RAG evaluation records", () => {
       citationSourceIds: ["source-a"],
       retrievalAttempts: 1,
       latencyMs: { total: 100, retrieval: 20, generation: 60 },
+      candidateCount: 4,
+      acceptedCount: 1,
+      hierarchyExpansion: true,
+      rerankerUsed: true,
+      sourceRecall: 1,
+      citationPrecision: 1,
+      citationCompleteness: 1,
     });
     expect(JSON.stringify(evaluationRecord)).not.toContain("private");
     expect(JSON.stringify(evaluationRecord)).not.toContain("vector-id");

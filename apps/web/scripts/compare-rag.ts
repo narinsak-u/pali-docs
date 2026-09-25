@@ -21,6 +21,7 @@ import {
   citationPrecision,
   evaluateGates,
   parseEvaluationManifest,
+  type RagEvaluationAggregate,
   type RagEvaluationRecord,
   type ReadyRagEvaluationManifest,
 } from "@/lib/rag/evaluation";
@@ -33,10 +34,66 @@ export interface ComparisonRecord {
   aiSdk: RagEvaluationRecord;
   langGraph: RagEvaluationRecord;
   deltas: {
+    candidateCount: number | null;
+    acceptedCount: number | null;
+    sourceRecall: number;
     latencyMs: number;
     outcomeChanged: boolean;
     citationPrecision: number;
     citationCompleteness: number;
+    tokenUse: number | null;
+    cost: number | null;
+  };
+}
+
+function optionalDelta(
+  candidate: number | undefined,
+  baseline: number | undefined,
+): number | null {
+  return candidate === undefined || baseline === undefined
+    ? null
+    : candidate - baseline;
+}
+
+function nullableDelta(
+  candidate: number | null,
+  baseline: number | null,
+): number | null {
+  return candidate === null || baseline === null ? null : candidate - baseline;
+}
+
+export interface AggregateComparison {
+  candidateCount: number | null;
+  acceptedCount: number | null;
+  sourceRecall: number;
+  citationPrecision: number;
+  citationCompleteness: number;
+  latencyMs: number;
+  tokenUse: number | null;
+  cost: number | null;
+}
+
+export function compareAggregates(
+  baseline: RagEvaluationAggregate,
+  candidate: RagEvaluationAggregate,
+): AggregateComparison {
+  return {
+    candidateCount: nullableDelta(
+      candidate.averageCandidateCount,
+      baseline.averageCandidateCount,
+    ),
+    acceptedCount: nullableDelta(
+      candidate.averageAcceptedCount,
+      baseline.averageAcceptedCount,
+    ),
+    sourceRecall: candidate.sourceRecall - baseline.sourceRecall,
+    citationPrecision: candidate.citationPrecision - baseline.citationPrecision,
+    citationCompleteness:
+      candidate.citationCompleteness - baseline.citationCompleteness,
+    latencyMs:
+      candidate.latencyMs.total.p95 - baseline.latencyMs.total.p95,
+    tokenUse: nullableDelta(candidate.averageTokenUse, baseline.averageTokenUse),
+    cost: nullableDelta(candidate.averageCost, baseline.averageCost),
   };
 }
 
@@ -49,6 +106,15 @@ export function compareRecords(
     aiSdk,
     langGraph,
     deltas: {
+      candidateCount: optionalDelta(
+        langGraph.candidateCount,
+        aiSdk.candidateCount,
+      ),
+      acceptedCount: optionalDelta(
+        langGraph.acceptedCount,
+        aiSdk.acceptedCount,
+      ),
+      sourceRecall: langGraph.sourceRecall - aiSdk.sourceRecall,
       latencyMs: langGraph.latencyMs.total - aiSdk.latencyMs.total,
       outcomeChanged: aiSdk.actualOutcome !== langGraph.actualOutcome,
       citationPrecision:
@@ -63,6 +129,8 @@ export function compareRecords(
           langGraph.citationSourceIds,
         ) -
         citationCompleteness(aiSdk.expectedSourceIds, aiSdk.citationSourceIds),
+      tokenUse: optionalDelta(langGraph.tokenUse, aiSdk.tokenUse),
+      cost: optionalDelta(langGraph.cost, aiSdk.cost),
     },
   };
 }
@@ -261,6 +329,11 @@ export async function main(): Promise<void> {
   const file = await open(resultFile, "wx");
   const comparisons: ComparisonRecord[] = [];
 
+  const baselineRetrievalConfig =
+    process.env.RAG_BASELINE_RETRIEVAL_CONFIG?.trim() || "dense-baseline";
+  const candidateRetrievalConfig =
+    process.env.RAG_CANDIDATE_RETRIEVAL_CONFIG?.trim() || "retrieval-quality";
+
   try {
     for (const evaluationCase of manifest.cases) {
       aiSdkRetrievedSourceIds = [];
@@ -268,6 +341,7 @@ export async function main(): Promise<void> {
         evaluationCase,
         runner: aiSdkRunner,
         runnerName: "ai-sdk",
+        retrievalConfig: baselineRetrievalConfig,
         corpusRevision: manifest.corpusRevision,
         modelId,
         retrievedSourceIds: () => [...aiSdkRetrievedSourceIds],
@@ -276,6 +350,7 @@ export async function main(): Promise<void> {
         evaluationCase,
         runner: langGraphRunner,
         runnerName: "langgraph",
+        retrievalConfig: candidateRetrievalConfig,
         corpusRevision: manifest.corpusRevision,
         modelId: "langgraph",
         retrievedSourceIds: () => langGraphRunner.getRetrievedSourceIds(),
@@ -293,11 +368,17 @@ export async function main(): Promise<void> {
   const aiSdkAggregate = aggregateEvaluation(aiSdkRecords);
   const langGraphAggregate = aggregateEvaluation(langGraphRecords);
   const violations = {
-    "ai-sdk": evaluateGates(aiSdkRecords, aiSdkAggregate, manifest.baseline),
+    "ai-sdk": evaluateGates(
+      aiSdkRecords,
+      aiSdkAggregate,
+      manifest.baseline,
+      manifest.corpusRevision,
+    ),
     langgraph: evaluateGates(
       langGraphRecords,
       langGraphAggregate,
       manifest.baseline,
+      manifest.corpusRevision,
     ),
   };
 
@@ -311,6 +392,11 @@ export async function main(): Promise<void> {
           "ai-sdk": aiSdkAggregate,
           langgraph: langGraphAggregate,
         },
+        retrievalConfigurations: {
+          [baselineRetrievalConfig]: aiSdkAggregate,
+          [candidateRetrievalConfig]: langGraphAggregate,
+        },
+        aggregateDeltas: compareAggregates(aiSdkAggregate, langGraphAggregate),
         violations,
       },
       null,

@@ -17,8 +17,11 @@ import { getRagConfig } from "@/lib/config/rag";
 import {
   aggregateEvaluation,
   assertEvaluationManifestReady,
+  citationCompleteness,
+  citationPrecision,
   evaluateGates,
   parseEvaluationManifest,
+  sourceRecall,
   type RagEvaluationCase,
   type RagEvaluationRecord,
 } from "@/lib/rag/evaluation";
@@ -28,6 +31,7 @@ interface RunEvaluationCaseOptions {
   evaluationCase: RagEvaluationCase;
   runner: AgentTurnRunner;
   runnerName: string;
+  retrievalConfig?: string;
   corpusRevision: string;
   modelId: string;
   retrievedSourceIds(): string[];
@@ -55,6 +59,7 @@ export async function runEvaluationCase({
   evaluationCase,
   runner,
   runnerName,
+  retrievalConfig = runnerName,
   corpusRevision,
   modelId,
   retrievedSourceIds,
@@ -65,6 +70,11 @@ export async function runEvaluationCase({
   let retrievalAttempts = 0;
   let retrievalLatency = 0;
   let generationStartedAt: number | null = null;
+  let candidateCount: number | undefined;
+  let acceptedCount: number | undefined;
+  let hierarchyExpansion: boolean | undefined;
+  let rerankerUsed: boolean | undefined;
+  let failure: string | undefined;
 
   const sink: AgentEventSink = {
     emit(event: AgentEvent): void {
@@ -79,6 +89,14 @@ export async function runEvaluationCase({
           retrievalLatency += now() - attemptStartedAt;
           retrievalStartedAt.delete(event.attempt);
         }
+        candidateCount = event.candidateCount ?? event.matchCount;
+        acceptedCount = event.acceptedCount ?? event.acceptedSourceIds?.length;
+        hierarchyExpansion = event.hierarchyExpansion;
+        rerankerUsed = event.rerankerUsed;
+        return;
+      }
+      if (event.type === "retrieval.failed" || event.type === "run.failed") {
+        failure = event.code;
         return;
       }
       if (event.type === "generation.started") {
@@ -110,19 +128,23 @@ export async function runEvaluationCase({
       : [];
   const observedSourceIds = retrievedSourceIds();
 
+  const actualOutcome = toEvaluationOutcome(
+    result,
+    citationSourceIds,
+    observedSourceIds,
+  );
+  const failureCode =
+    failure ?? ("code" in result ? result.code : undefined);
   return {
     caseId: evaluationCase.id,
     category: evaluationCase.category,
     language: evaluationCase.language,
     runner: runnerName,
+    retrievalConfig,
     corpusRevision,
     modelId,
     expectedOutcome: evaluationCase.expectedOutcome,
-    actualOutcome: toEvaluationOutcome(
-      result,
-      citationSourceIds,
-      observedSourceIds,
-    ),
+    actualOutcome,
     expectedSourceIds: [...evaluationCase.expectedSourceIds],
     forbiddenSourceIds: [...(evaluationCase.forbiddenSourceIds ?? [])],
     retrievedSourceIds: observedSourceIds,
@@ -135,6 +157,26 @@ export async function runEvaluationCase({
         generationStartedAt === null ? 0 : completedAt - generationStartedAt,
       ),
     },
+    ...(candidateCount === undefined ? {} : { candidateCount }),
+    ...(acceptedCount === undefined ? {} : { acceptedCount }),
+    ...(hierarchyExpansion === undefined ? {} : { hierarchyExpansion }),
+    ...(rerankerUsed === undefined ? {} : { rerankerUsed }),
+    sourceRecall: sourceRecall(
+      evaluationCase.expectedSourceIds,
+      observedSourceIds,
+    ),
+    citationPrecision: citationPrecision(
+      evaluationCase.expectedSourceIds,
+      citationSourceIds,
+    ),
+    citationCompleteness: citationCompleteness(
+      evaluationCase.expectedSourceIds,
+      citationSourceIds,
+    ),
+    ...(failureCode === undefined ? {} : { failure: failureCode }),
+    ...(failureCode === "aborted" || failureCode === "cancelled"
+      ? { cancelled: true }
+      : {}),
   };
 }
 
@@ -211,7 +253,12 @@ export async function main(): Promise<void> {
   }
 
   const aggregate = aggregateEvaluation(records);
-  const violations = evaluateGates(records, aggregate, manifest.baseline);
+  const violations = evaluateGates(
+    records,
+    aggregate,
+    manifest.baseline,
+    manifest.corpusRevision,
+  );
   console.log(
     JSON.stringify(
       {

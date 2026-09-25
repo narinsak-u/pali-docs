@@ -35,6 +35,7 @@ export interface RagEvaluationRecord {
   category: RagEvaluationCategory;
   language: RagEvaluationCase["language"];
   runner: string;
+  retrievalConfig?: string;
   corpusRevision: string;
   modelId: string;
   expectedOutcome: RagExpectedOutcome;
@@ -45,6 +46,17 @@ export interface RagEvaluationRecord {
   citationSourceIds: string[];
   retrievalAttempts: number;
   latencyMs: RagStageLatencies;
+  candidateCount?: number;
+  acceptedCount?: number;
+  hierarchyExpansion?: boolean;
+  rerankerUsed?: boolean;
+  sourceRecall: number;
+  citationPrecision: number;
+  citationCompleteness: number;
+  tokenUse?: number;
+  cost?: number;
+  failure?: string;
+  cancelled?: boolean;
 }
 
 export interface PercentileSummary {
@@ -57,7 +69,6 @@ export interface RagLatencySummary {
   retrieval: PercentileSummary;
   generation: PercentileSummary;
 }
-
 export interface RagEvaluationAggregate {
   caseCount: number;
   sourceRecall: number;
@@ -66,11 +77,23 @@ export interface RagEvaluationAggregate {
   citationPrecision: number;
   citationCompleteness: number;
   averageRetrievalAttempts: number;
+  averageCandidateCount: number | null;
+  averageAcceptedCount: number | null;
+  rerankerUsageRate: number | null;
+  hierarchyExpansionRate: number | null;
+  averageTokenUse: number | null;
+  averageCost: number | null;
+  failureCount: number;
+  cancellationCount: number;
   latencyMs: RagLatencySummary;
 }
 
 export interface RagEvaluationBaseline {
   outcomeAccuracy: number;
+  sourceRecall?: number;
+  citationPrecision?: number;
+  citationCompleteness?: number;
+  maxLatencyP95?: number;
 }
 
 const evaluationCaseSchema = z
@@ -108,7 +131,15 @@ const evaluationManifestSchema = z.discriminatedUnion("status", [
       schemaVersion: z.literal(1),
       status: z.literal("ready"),
       corpusRevision: z.string().min(1),
-      baseline: z.object({ outcomeAccuracy: z.number().min(0).max(1) }).strict(),
+      baseline: z
+        .object({
+          outcomeAccuracy: z.number().min(0).max(1),
+          sourceRecall: z.number().min(0).max(1).optional(),
+          citationPrecision: z.number().min(0).max(1).optional(),
+          citationCompleteness: z.number().min(0).max(1).optional(),
+          maxLatencyP95: z.number().nonnegative().optional(),
+        })
+        .strict(),
       cases: z.array(evaluationCaseSchema),
     })
     .strict(),
@@ -247,6 +278,11 @@ function average(values: readonly number[]): number {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function averageOptional(values: readonly (number | undefined)[]): number | null {
+  const present = values.filter((value): value is number => value !== undefined);
+  return present.length === 0 ? null : average(present);
+}
+
 export function sourceRecall(
   expectedSourceIds: readonly string[],
   retrievedSourceIds: readonly string[],
@@ -363,6 +399,22 @@ export function aggregateEvaluation(
     averageRetrievalAttempts: average(
       records.map(({ retrievalAttempts }) => retrievalAttempts),
     ),
+    averageCandidateCount: averageOptional(records.map(({ candidateCount }) => candidateCount)),
+    averageAcceptedCount: averageOptional(records.map(({ acceptedCount }) => acceptedCount)),
+    rerankerUsageRate: averageOptional(
+      records.map(({ rerankerUsed }) =>
+        rerankerUsed === undefined ? undefined : rerankerUsed ? 1 : 0,
+      ),
+    ),
+    hierarchyExpansionRate: averageOptional(
+      records.map(({ hierarchyExpansion }) =>
+        hierarchyExpansion === undefined ? undefined : hierarchyExpansion ? 1 : 0,
+      ),
+    ),
+    averageTokenUse: averageOptional(records.map(({ tokenUse }) => tokenUse)),
+    averageCost: averageOptional(records.map(({ cost }) => cost)),
+    failureCount: records.filter(({ failure }) => failure !== undefined).length,
+    cancellationCount: records.filter(({ cancelled }) => cancelled === true).length,
     latencyMs: summarizeLatencies(records.map(({ latencyMs }) => latencyMs)),
   };
 }
@@ -371,6 +423,7 @@ export function evaluateGates(
   records: readonly RagEvaluationRecord[],
   aggregate: RagEvaluationAggregate,
   baseline: RagEvaluationBaseline,
+  expectedCorpusRevision?: string,
 ): string[] {
   const violations: string[] = [];
 
@@ -379,13 +432,66 @@ export function evaluateGates(
       `outcome accuracy ${aggregate.outcomeAccuracy.toFixed(3)} is below baseline ${baseline.outcomeAccuracy.toFixed(3)}`,
     );
   }
-  if (aggregate.citationPrecision < 1) {
+  const requiredCitationPrecision = baseline.citationPrecision ?? 1;
+  if (aggregate.citationPrecision < requiredCitationPrecision) {
     violations.push(
-      `citation precision ${aggregate.citationPrecision.toFixed(3)} is below required 1.000`,
+      `citation precision ${aggregate.citationPrecision.toFixed(3)} is below required ${requiredCitationPrecision.toFixed(3)}`,
     );
   }
 
+  if (
+    baseline.sourceRecall !== undefined &&
+    aggregate.sourceRecall < baseline.sourceRecall
+  ) {
+    violations.push(
+      `source recall ${aggregate.sourceRecall.toFixed(3)} is below baseline ${baseline.sourceRecall.toFixed(3)}`,
+    );
+  }
+  if (
+    baseline.citationCompleteness !== undefined &&
+    aggregate.citationCompleteness < baseline.citationCompleteness
+  ) {
+    violations.push(
+      `citation completeness ${aggregate.citationCompleteness.toFixed(3)} is below baseline ${baseline.citationCompleteness.toFixed(3)}`,
+    );
+  }
+  if (
+    baseline.maxLatencyP95 !== undefined &&
+    aggregate.latencyMs.total.p95 > baseline.maxLatencyP95
+  ) {
+    violations.push(
+      `total latency p95 ${aggregate.latencyMs.total.p95.toFixed(3)} exceeds baseline ${baseline.maxLatencyP95.toFixed(3)}`,
+    );
+  }
+
+  const supportedOutcomes = new Set<RagActualOutcome>([
+    "grounded",
+    "insufficient-evidence",
+    "retrieval-unavailable",
+    "unsupported-answer",
+    "failed",
+  ]);
+
   for (const record of records) {
+    if (!supportedOutcomes.has(record.actualOutcome)) {
+      violations.push(
+        `case ${record.caseId} has an unsupported outcome: ${record.actualOutcome}`,
+      );
+    }
+    if (
+      expectedCorpusRevision !== undefined &&
+      record.corpusRevision !== expectedCorpusRevision
+    ) {
+      violations.push(
+        `case ${record.caseId} uses corpus revision ${record.corpusRevision} instead of ${expectedCorpusRevision}`,
+      );
+    }
+    if (
+      record.expectedOutcome === "grounded" &&
+      record.expectedSourceIds.length === 0
+    ) {
+      violations.push(`case ${record.caseId} is missing authoritative source IDs`);
+    }
     if (record.actualOutcome === "unsupported-answer") {
       violations.push(
         `case ${record.caseId} returned an answer without accepted citations`,

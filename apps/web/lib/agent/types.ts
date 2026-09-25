@@ -38,6 +38,10 @@ export type AgentEvent =
       attempt: number;
       matchCount: number;
       acceptedSourceIds?: string[];
+      candidateCount?: number;
+      acceptedCount?: number;
+      hierarchyExpansion?: boolean;
+      rerankerUsed?: boolean;
     }
   | { type: "retrieval.failed"; runId: string; code: string }
   | {

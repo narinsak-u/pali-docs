@@ -386,7 +386,21 @@ export function createAiSdkAgentTurnRunner(
             runId: input.runId,
             attempt,
             matchCount:
-              bundle.status === "grounded" ? bundle.passages.length : 0,
+              bundle.retrievalMetrics?.candidateCount ??
+              (bundle.status === "grounded" ? bundle.passages.length : 0),
+            ...(bundle.status === "grounded"
+              ? {
+                  acceptedSourceIds: bundle.passages.map(({ source }) => source),
+                }
+              : {}),
+            ...(bundle.retrievalMetrics === undefined
+              ? {}
+              : {
+                  candidateCount: bundle.retrievalMetrics.candidateCount,
+                  acceptedCount: bundle.retrievalMetrics.acceptedCount,
+                  hierarchyExpansion: bundle.retrievalMetrics.hierarchyExpansion,
+                  rerankerUsed: bundle.retrievalMetrics.rerankerUsed,
+                }),
           });
 
           if (bundle.status === "grounded") {
