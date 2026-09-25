@@ -111,11 +111,11 @@ def _chunk_metadata(chunk: Chunk, revision: str) -> dict[str, object]:
             "corpusRevision": _metadata_value(revision, "corpusRevision"),
             "sourceId": _metadata_value(chunk.source_id, "sourceId"),
             "sourceVersion": _metadata_value(chunk.source_version, "sourceVersion"),
+            "parentId": _metadata_value(chunk.parent_id, "parentId"),
         }
     )
-    section = acl.get("section")
-    if section is not None:
-        metadata["section"] = _metadata_value(section, "section")
+    if chunk.section is not None:
+        metadata["section"] = _metadata_value(chunk.section, "section")
     return metadata
 
 

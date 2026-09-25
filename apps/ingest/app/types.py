@@ -35,11 +35,13 @@ class SourceDocument:
 @dataclass(frozen=True, slots=True)
 class Chunk:
     id: str
+    parent_id: str
     source_id: str
     source_version: str
     index: int
     text: str
     title: str
+    section: str | None = None
     acl_metadata: Mapping[str, JsonValue] = field(
         default_factory=lambda: {"visibility": "public"}
     )
@@ -47,9 +49,11 @@ class Chunk:
     def __post_init__(self) -> None:
         if any(
             not value.strip()
-            for value in (self.id, self.source_id, self.source_version, self.title)
+            for value in (self.id, self.parent_id, self.source_id, self.source_version, self.title)
         ):
             raise ValueError("chunk identity fields must be non-empty")
+        if self.section is not None and not self.section.strip():
+            raise ValueError("chunk section must be non-empty when provided")
         if self.index < 0:
             raise ValueError("chunk index must be non-negative")
         if not self.text.strip():
@@ -58,7 +62,7 @@ class Chunk:
 
 @dataclass(frozen=True, slots=True)
 class ChunkingPolicy:
-    version: str = "paragraph-v1"
+    version: str = "hierarchical-v1"
     max_characters: int = 1_600
     overlap_characters: int = 200
 

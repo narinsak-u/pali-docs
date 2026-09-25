@@ -65,6 +65,63 @@ def test_chunk_overlap_and_ids_are_stable() -> None:
     assert [chunk.index for chunk in first] == [0, 1, 2]
 
 
+def test_chunks_publish_deterministic_hierarchy_metadata() -> None:
+    chunks = chunk_text(
+        "# Grammar\n\nFirst paragraph.\n\nSecond paragraph.\n\n# Examples\n\nA related example.",
+        source_id="docs/guide",
+        source_version="abc123",
+        title="Guide",
+        policy=ChunkingPolicy(version="hierarchical-v1", max_characters=30, overlap_characters=0),
+    )
+
+    grammar_chunks = [chunk for chunk in chunks if chunk.section == "Grammar"]
+    example_chunks = [chunk for chunk in chunks if chunk.section == "Examples"]
+
+    assert grammar_chunks
+    assert example_chunks
+    assert len({chunk.parent_id for chunk in grammar_chunks}) == 1
+    assert len({chunk.parent_id for chunk in example_chunks}) == 1
+    assert grammar_chunks[0].parent_id != example_chunks[0].parent_id
+    assert [chunk.id for chunk in chunks] == [
+        chunk.id
+        for chunk in chunk_text(
+            "# Grammar\n\nFirst paragraph.\n\nSecond paragraph.\n\n# Examples\n\nA related example.",
+            source_id="docs/guide",
+            source_version="abc123",
+            title="Guide",
+            policy=ChunkingPolicy(
+                version="hierarchical-v1", max_characters=30, overlap_characters=0
+            ),
+        )
+    ]
+
+
+
+
+def test_publisher_includes_hierarchy_metadata() -> None:
+    chunks = chunk_text(
+        "# Intro\n\nA passage.",
+        source_id="docs/guide",
+        source_version="abc123",
+        title="Guide",
+    )
+    seen: list[dict[str, object]] = []
+
+    publisher = PineconePublisher(
+        IngestSettings(),
+        embed_fn=lambda _texts: {"data": [{"values": [1.0, 2.0]}]},
+        upsert_fn=lambda records, _namespace: (
+            seen.extend(record["metadata"] for record in records) or {"upserted_count": len(records)}
+        ),
+        stats_fn=lambda _namespace: {"namespaces": {"staging-rev-abc": {"vector_count": 1}}},
+    )
+
+    asyncio.run(publisher.publish(chunks, "rev-abc"))
+
+    assert seen[0]["parentId"] == chunks[0].parent_id
+    assert seen[0]["section"] == "Intro"
+
+
 def test_publisher_stages_metadata_and_rejects_dimension_mismatch() -> None:
     chunks = chunk_text("one", source_id="docs/guide", source_version="abc123", title="Guide", acl_metadata={"visibility": "private", "section": "intro"})
     seen: list[tuple[list[dict[str, object]], str]] = []
@@ -94,6 +151,7 @@ def test_publisher_stages_metadata_and_rejects_dimension_mismatch() -> None:
         "corpusRevision": "rev-abc",
         "sourceId": "docs/guide",
         "sourceVersion": "abc123",
+        "parentId": chunks[0].parent_id,
     }
 
     bad = PineconePublisher(

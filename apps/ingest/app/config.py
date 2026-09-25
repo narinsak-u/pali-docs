@@ -16,7 +16,7 @@ class IngestSettings:
     state_dir: Path = Path(".ingest-state")
     source_prefix: str = "content/docs"
     schema_version: str = "v1"
-    chunking_version: str = "paragraph-v1"
+    chunking_version: str = "hierarchical-v1"
     max_chunk_chars: int = 1_600
     overlap_chars: int = 200
     embedding_model: str = "llama-text-embed-v2"

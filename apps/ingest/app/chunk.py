@@ -12,6 +12,7 @@ class ChunkError(ValueError):
 
 
 _PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n+")
+_SECTION_HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)\s*$")
 
 
 def _split_long_paragraph(paragraph: str, policy: ChunkingPolicy) -> list[str]:
@@ -37,8 +38,44 @@ def _paragraphs(text: str) -> list[str]:
     return [part.strip() for part in _PARAGRAPH_BREAK.split(text) if part.strip()]
 
 
+def _sections(text: str) -> list[tuple[int, str | None, str]]:
+    sections: list[tuple[int, str | None, str]] = []
+    title: str | None = None
+    lines: list[str] = []
+
+    def flush() -> None:
+        body = "\n".join(lines).strip()
+        if body:
+            sections.append((len(sections), title, body))
+
+    for line in text.splitlines():
+        heading = _SECTION_HEADING.match(line.strip())
+        if heading:
+            flush()
+            title = heading.group(1).strip()
+            lines = []
+        else:
+            lines.append(line)
+    flush()
+    if not sections:
+        return [(0, None, text.strip())]
+    return sections
+
+
 def _chunk_id(source_id: str, index: int, text: str) -> str:
     payload = f"{source_id}\0{index}\0{text}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _parent_id(
+    source_id: str,
+    source_version: str,
+    section_index: int,
+    section: str | None,
+) -> str:
+    payload = f"{source_id}\0{source_version}\0{section_index}\0{section or ''}".encode(
+        "utf-8"
+    )
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -51,54 +88,65 @@ def chunk_text(
     policy: ChunkingPolicy | None = None,
     acl_metadata: Mapping[str, JsonValue] | None = None,
 ) -> tuple[Chunk, ...]:
-    """Create stable, paragraph-aware chunks without interpreting Markdown/MDX."""
+    """Create stable, section-aware child chunks with parent provenance."""
     selected_policy = policy or ChunkingPolicy()
     if not text.strip():
         raise ChunkError("cannot chunk empty text")
     if not source_id.strip() or not source_version.strip() or not title.strip():
         raise ChunkError("source identity and title must be non-empty")
 
-    paragraphs = _paragraphs(text)
-    pieces: list[str] = []
-    for paragraph in paragraphs:
-        pieces.extend(_split_long_paragraph(paragraph, selected_policy))
-
+    acl = dict(acl_metadata or {"visibility": "public"})
+    acl_section = acl.get("section")
+    fallback_section = acl_section.strip() if isinstance(acl_section, str) else None
     chunks: list[Chunk] = []
-    current: list[str] = []
-    current_length = 0
-    for piece in pieces:
-        separator_length = 2 if current else 0
-        if current and current_length + separator_length + len(piece) > selected_policy.max_characters:
+
+    for section_index, heading, section_body in _sections(text):
+        section = heading or fallback_section
+        parent_id = _parent_id(source_id, source_version, section_index, section)
+        pieces: list[str] = []
+        for paragraph in _paragraphs(section_body):
+            pieces.extend(_split_long_paragraph(paragraph, selected_policy))
+
+        current: list[str] = []
+        current_length = 0
+        for piece in pieces:
+            separator_length = 2 if current else 0
+            if current and current_length + separator_length + len(piece) > selected_policy.max_characters:
+                chunk_text_value = "\n\n".join(current)
+                chunks.append(
+                    Chunk(
+                        id=_chunk_id(source_id, len(chunks), chunk_text_value),
+                        parent_id=parent_id,
+                        source_id=source_id,
+                        source_version=source_version,
+                        index=len(chunks),
+                        text=chunk_text_value,
+                        title=title,
+                        section=section,
+                        acl_metadata=acl,
+                    )
+                )
+                current = []
+                current_length = 0
+            current.append(piece)
+            current_length += (2 if len(current) > 1 else 0) + len(piece)
+
+        if current:
             chunk_text_value = "\n\n".join(current)
             chunks.append(
                 Chunk(
                     id=_chunk_id(source_id, len(chunks), chunk_text_value),
+                    parent_id=parent_id,
                     source_id=source_id,
                     source_version=source_version,
                     index=len(chunks),
                     text=chunk_text_value,
                     title=title,
-                    acl_metadata=dict(acl_metadata or {"visibility": "public"}),
+                    section=section,
+                    acl_metadata=acl,
                 )
             )
-            current = []
-            current_length = 0
-        current.append(piece)
-        current_length += (2 if len(current) > 1 else 0) + len(piece)
 
-    if current:
-        chunk_text_value = "\n\n".join(current)
-        chunks.append(
-            Chunk(
-                id=_chunk_id(source_id, len(chunks), chunk_text_value),
-                source_id=source_id,
-                source_version=source_version,
-                index=len(chunks),
-                text=chunk_text_value,
-                title=title,
-                acl_metadata=dict(acl_metadata or {"visibility": "public"}),
-            )
-        )
     if not chunks:
         raise ChunkError("chunking produced no chunks")
     return tuple(chunks)
