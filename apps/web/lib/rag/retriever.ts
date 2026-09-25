@@ -24,12 +24,36 @@ function formatPassage(passage: GroundingPassage): string {
   return `<passage id="${escapeXml(passage.id)}" source="${escapeXml(passage.source)}" title="${escapeXml(passage.title)}"${section}>\n${escapeXml(passage.text)}\n</passage>`;
 }
 
+function expandByParent(passages: GroundingPassage[]): GroundingPassage[] {
+  const groups = new Map<string, GroundingPassage[]>();
+  for (const passage of passages) {
+    if (passage.parentId === undefined) continue;
+    const group = groups.get(passage.parentId) ?? [];
+    group.push(passage);
+    groups.set(passage.parentId, group);
+  }
+
+  const expanded: GroundingPassage[] = [];
+  const seenParents = new Set<string>();
+  for (const passage of passages) {
+    if (passage.parentId === undefined) {
+      expanded.push(passage);
+      continue;
+    }
+    if (seenParents.has(passage.parentId)) continue;
+    seenParents.add(passage.parentId);
+    expanded.push(...(groups.get(passage.parentId) ?? [passage]));
+  }
+  return expanded;
+}
+
 function selectPassages(
   candidates: GroundingPassage[],
   minScore: number,
   acceptedTopK: number,
   maxContextChars: number,
   corpusRevision: string,
+  hierarchyExpansion: boolean,
 ): { passages: GroundingPassage[]; context: string } | null {
   const ranked = candidates
     .map((passage, index) => ({ passage, index }))
@@ -47,13 +71,14 @@ function selectPassages(
     unique.push(passage);
   }
 
+  const ordered = hierarchyExpansion ? expandByParent(unique) : unique;
   const header = `<retrieved-passages corpus-revision="${escapeXml(corpusRevision)}">`;
   const footer = "</retrieved-passages>";
   let contextLength = header.length + 1 + footer.length;
   const passages: GroundingPassage[] = [];
   const formattedPassages: string[] = [];
 
-  for (const passage of unique) {
+  for (const passage of ordered) {
     if (passages.length >= acceptedTopK) break;
     const formatted = formatPassage(passage);
     const separatorLength = 1;
@@ -112,7 +137,6 @@ export async function retrieve(
       errorCode: "embedding_unavailable",
     };
   }
-
   let candidates: GroundingPassage[];
   try {
     signal?.throwIfAborted();
@@ -137,6 +161,7 @@ export async function retrieve(
     config.RAG_ACCEPTED_TOP_K,
     config.RAG_MAX_CONTEXT_CHARS,
     config.PINECONE_CORPUS_REVISION,
+    config.RAG_HIERARCHY_EXPANSION,
   );
 
   if (!selected) {

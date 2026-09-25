@@ -8,6 +8,7 @@ const mockedConfig = vi.hoisted(() => ({
   RAG_CANDIDATE_TOP_K: 4,
   RAG_ACCEPTED_TOP_K: 3,
   RAG_MIN_SCORE: 0.7,
+  RAG_HIERARCHY_EXPANSION: false,
   RAG_MAX_CONTEXT_CHARS: 2_000,
 }));
 
@@ -60,6 +61,7 @@ beforeEach(() => {
     RAG_CANDIDATE_TOP_K: 4,
     RAG_ACCEPTED_TOP_K: 3,
     RAG_MIN_SCORE: 0.7,
+    RAG_HIERARCHY_EXPANSION: false,
     RAG_MAX_CONTEXT_CHARS: 2_000,
   });
   mockedEmbed.mockResolvedValue([0.1, 0.2]);
@@ -99,6 +101,26 @@ describe("retrieve", () => {
       passages: [matching],
     });
   });
+
+  it("expands accepted children with the same parent when enabled", async () => {
+    Object.assign(mockedConfig, {
+      RAG_HIERARCHY_EXPANSION: true,
+      RAG_ACCEPTED_TOP_K: 2,
+    });
+    const child = Object.assign(passage("child", 0.9), { parentId: "parent-1" });
+    const sibling = Object.assign(passage("sibling", 0.71), { parentId: "parent-1" });
+    const unrelated = Object.assign(passage("unrelated", 0.8), { parentId: "parent-2" });
+    mockedQuery.mockResolvedValue([child, sibling, unrelated]);
+
+    const result = await retrieve({ query: "dhamma", attempt: 0 });
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages.map(({ id }) => id)).toEqual([
+      "child",
+      "sibling",
+    ]);
+  });
+
 
 
   it("rejects candidates below minScore while accepting the boundary", async () => {

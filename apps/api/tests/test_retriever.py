@@ -18,6 +18,7 @@ def settings(**overrides: object) -> SimpleNamespace:
         "RAG_CANDIDATE_TOP_K": 20,
         "RAG_ACCEPTED_TOP_K": 8,
         "RAG_MIN_SCORE": 0.5,
+        "RAG_HIERARCHY_EXPANSION": False,
         "RAG_MAX_CONTEXT_CHARS": 12_000,
     }
     values.update(overrides)
@@ -138,6 +139,30 @@ async def test_retriever_passes_scope_and_applies_accepted_bound() -> None:
     }
     assert [passage.id for passage in result.passages] == ["high", "middle"]
     assert [citation.id for citation in result.citations] == ["high", "middle"]
+
+
+@pytest.mark.asyncio
+async def test_retriever_expands_children_with_the_same_parent_when_enabled() -> None:
+    child = match("child", score=0.9)
+    sibling = match("sibling", score=0.71)
+    unrelated = match("unrelated", score=0.8)
+    child["metadata"]["parentId"] = "parent-1"  # type: ignore[index]
+    sibling["metadata"]["parentId"] = "parent-1"  # type: ignore[index]
+    unrelated["metadata"]["parentId"] = "parent-2"  # type: ignore[index]
+
+    retriever = PineconeRetriever(
+        settings(RAG_ACCEPTED_TOP_K=2, RAG_HIERARCHY_EXPANSION=True),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [child, sibling, unrelated],
+        },
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == ["child", "sibling"]
+
 
 
 @pytest.mark.asyncio

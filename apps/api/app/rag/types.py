@@ -22,7 +22,7 @@ class Citation:
 class GroundingPassage(Citation):
     text: str
     score: float
-
+    parent_id: str | None = field(default=None, kw_only=True)
 
 @dataclass(frozen=True, slots=True)
 class GroundedBundle:

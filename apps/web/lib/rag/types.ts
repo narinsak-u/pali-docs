@@ -13,6 +13,7 @@ export interface Citation {
 export interface GroundingPassage extends Citation {
   text: string;
   score: number;
+  parentId?: string;
 }
 
 export type GroundingBundle =

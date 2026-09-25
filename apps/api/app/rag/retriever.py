@@ -64,6 +64,27 @@ def _format_passage(passage: GroundingPassage) -> str:
     )
 
 
+def _expand_by_parent(passages: list[GroundingPassage]) -> list[GroundingPassage]:
+    groups: dict[str, list[GroundingPassage]] = {}
+    for passage in passages:
+        if passage.parent_id is None:
+            continue
+        groups.setdefault(passage.parent_id, []).append(passage)
+
+    expanded: list[GroundingPassage] = []
+    seen_parents: set[str] = set()
+    for passage in passages:
+        parent_id = passage.parent_id
+        if parent_id is None:
+            expanded.append(passage)
+            continue
+        if parent_id in seen_parents:
+            continue
+        seen_parents.add(parent_id)
+        expanded.extend(groups.get(parent_id, [passage]))
+    return expanded
+
+
 class PineconeRetriever:
     """Application-owned, fail-closed retrieval policy around Pinecone."""
 
@@ -237,6 +258,7 @@ class PineconeRetriever:
                 continue
 
             section = _non_empty_string(metadata.get("section"))
+            parent_id = _non_empty_string(metadata.get("parentId"))
             passages.append(
                 GroundingPassage(
                     id=match_id,
@@ -245,6 +267,7 @@ class PineconeRetriever:
                     section=section,
                     text=text,
                     score=score_float,
+                    parent_id=parent_id,
                 )
             )
         if malformed_score and not passages:
@@ -273,6 +296,9 @@ class PineconeRetriever:
             seen_ids.add(passage.id)
             unique.append(passage)
 
+        ordered = _expand_by_parent(unique) if config.RAG_HIERARCHY_EXPANSION else unique
+
+
         header = (
             '<retrieved-passages corpus-revision="'
             f'{_escape_xml(config.PINECONE_CORPUS_REVISION)}">'
@@ -282,7 +308,7 @@ class PineconeRetriever:
         accepted: list[GroundingPassage] = []
         formatted: list[str] = []
 
-        for passage in unique:
+        for passage in ordered:
             if len(accepted) >= config.RAG_ACCEPTED_TOP_K:
                 break
             rendered = _format_passage(passage)

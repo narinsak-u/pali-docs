@@ -50,6 +50,9 @@ export async function queryPinecone(
     const section = isNonEmptyString(metadata.section)
       ? metadata.section
       : undefined;
+    const parentId = isNonEmptyString(metadata.parentId)
+      ? metadata.parentId
+      : undefined;
     return [
       {
         id: match.id,
@@ -58,6 +61,7 @@ export async function queryPinecone(
         source: metadata.source,
         title: metadata.title,
         ...(section === undefined ? {} : { section }),
+        ...(parentId === undefined ? {} : { parentId }),
       },
     ];
   });
