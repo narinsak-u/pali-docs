@@ -21,12 +21,15 @@ This host must not be an Apple Silicon or CPU-only deployment target. The reposi
 - Model and served ID: `Qwen/Qwen3-8B` at Hugging Face revision `b968826d9c46dd6066d109eabc6255188de91218`.
 - Tokenizer: the same repository and revision as the model.
 - One tensor-parallel GPU (`--tensor-parallel-size 1`).
-- Qwen3 reasoning parser (`qwen3`) and the model's pinned tokenizer chat template.
-- Non-thinking requests (`enable_thinking: false`) are sent by the FastAPI local provider through its existing `ChatOpenAI` seam; the compose server does not use an unsupported server-level default flag.
+- Qwen3 reasoning parser (`qwen3`) and Hermes tool-call parser (`hermes`) with vLLM's auto-tool-choice mode.
+- The model's pinned chat template; non-thinking requests (`enable_thinking: false`) are sent by the FastAPI local provider through its existing `ChatOpenAI` seam; the compose server does not use an unsupported server-level default flag.
+- Structured stages use LangChain function-calling requests with strict schema validation; tool calls are parsed and authorized by the application before execution.
+- Pilot tool calls are serialized (`parallel_tool_calls=false`) and support request-level `auto`, `required`, named, and `none` choices.
+- Tool parsing and structured output are enabled only for the private local provider; the hosted provider remains unchanged as rollback.
 
-Do not replace these with `latest`, an unpinned Hugging Face branch, a different tokenizer, or a different parser without a new compatibility check. Tool parsing and structured output are intentionally not enabled by this pilot.
+Do not replace these with `latest`, an unpinned Hugging Face branch, a different tokenizer, or a different parser without a new compatibility check.
 
-The compatibility choice follows the [official Qwen vLLM deployment guide](https://qwen.readthedocs.io/en/latest/deployment/vllm.html): it documents `--reasoning-parser qwen3` since vLLM 0.9.0 and states that `enable_thinking=False` is incompatible with the parser in vLLM 0.8.5 but resolved in 0.9.0. The [vLLM 0.9.0 reasoning parser documentation](https://docs.vllm.ai/en/v0.9.0/api/vllm/reasoning/qwen3_reasoning_parser.html) is the parser reference for this pin.
+The compatibility choice follows the [official Qwen vLLM deployment guide](https://qwen.readthedocs.io/en/latest/deployment/vllm.html): it documents `--reasoning-parser qwen3` and `--enable-auto-tool-choice --tool-call-parser hermes` for Qwen3. The pinned Qwen3 chat template is used with request-level `chat_template_kwargs: {"enable_thinking": false}`.
 
 ## Start the private server
 

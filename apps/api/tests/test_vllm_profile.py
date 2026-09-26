@@ -19,6 +19,8 @@ def test_qwen3_profile_is_pinned_for_private_non_thinking_single_gpu() -> None:
         "vllm/vllm-openai@sha256:df2c55e5107afea09ea1a50f9dd96c99ebf97a795334c4d08f691f3d79b2ab12"
     )
     assert QWEN3_VLLM_PROFILE.reasoning_parser == "qwen3"
+    assert QWEN3_VLLM_PROFILE.tool_call_parser == "hermes"
+    assert QWEN3_VLLM_PROFILE.enable_auto_tool_choice is True
     assert QWEN3_VLLM_PROFILE.chat_template_kwargs == {"enable_thinking": False}
     assert QWEN3_VLLM_PROFILE.tensor_parallel_size == 1
 
@@ -36,6 +38,8 @@ def test_compose_profile_keeps_vllm_private_and_matches_pinned_profile() -> None
     assert f"--tokenizer-revision\n      - {QWEN3_VLLM_PROFILE.tokenizer_revision}" in compose
     assert '127.0.0.1:8000:8000' in compose
     assert '--reasoning-parser\n      - qwen3' in compose
+    assert "--enable-auto-tool-choice" in compose
+    assert "--tool-call-parser\n      - hermes" in compose
     assert "--default-chat-template-kwargs" not in compose
 
 def test_model_identity_accepts_only_the_expected_served_model() -> None:

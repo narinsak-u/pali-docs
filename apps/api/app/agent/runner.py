@@ -39,10 +39,11 @@ from .types import (
     RetrievalDecision,
     Suggestions,
     TerminalResult,
+    ToolChoice,
+    ToolInvocation,
 )
 
 PALI_EXPERT_SYSTEM_PROMPT = """You are a Pali language expert. Your responses are informative, accurate, and concise — short for factual questions, slightly longer for explanations.
-
 Answer in the same language the user wrote in. If the user wrote in Thai, respond in Thai.
 
 All Pali language, translation, textual, and Buddhist-concept claims must be grounded in retrieved passages supplied for the current turn. If the corpus evidence is absent or insufficient, state that the corpus does not provide enough evidence; do not fill gaps from general knowledge.
@@ -76,12 +77,96 @@ class AgentRunnerDependencies:
     model: Any | None = None
 
 
+
+@dataclass(frozen=True, slots=True)
+class _ToolSpec:
+    name: str
+    args_schema: type[Any]
+    handler: Callable[[Any], Any] | None = None
+    authorize: Callable[[AgentTurnInput], object] | None = None
+    description: str = ""
+
+
+def _tool_specs(tools: Sequence[Mapping[str, object] | object]) -> list[_ToolSpec]:
+    specs: list[_ToolSpec] = []
+    seen: set[str] = set()
+    for raw in tools:
+        if isinstance(raw, Mapping):
+            name = raw.get("name")
+            schema = raw.get("args_schema")
+            handler = raw.get("handler")
+            authorize = raw.get("authorize")
+            description = raw.get("description", "")
+        else:
+            name = getattr(raw, "name", None)
+            schema = getattr(raw, "args_schema", None)
+            handler = getattr(raw, "handler", None)
+            authorize = getattr(raw, "authorize", None)
+            description = getattr(raw, "description", "")
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in seen
+            or not isinstance(schema, type)
+            or not hasattr(schema, "model_json_schema")
+        ):
+            raise ValueError("invalid application tool definition")
+        if handler is not None and not callable(handler):
+            raise ValueError("invalid application tool handler")
+        if authorize is not None and not callable(authorize):
+            raise ValueError("invalid application tool authorizer")
+        seen.add(name)
+        specs.append(
+            _ToolSpec(
+                name=name,
+                args_schema=schema,
+                handler=cast(Callable[[Any], Any] | None, handler),
+                authorize=cast(Callable[[AgentTurnInput], object] | None, authorize),
+                description=description if isinstance(description, str) else "",
+            )
+        )
+    return specs
+
+
+class ApplicationToolDispatcher:
+    """Validate and execute only tools explicitly registered by the application."""
+
+    def __init__(self, tools: Sequence[Mapping[str, object] | object]) -> None:
+        specs = _tool_specs(tools)
+        self._tools = {spec.name: spec for spec in specs}
+
+    async def dispatch(self, invocation: ToolInvocation, input: AgentTurnInput) -> object:
+        spec = self._tools.get(invocation.name)
+        if spec is None:
+            raise ValueError(f"unknown tool call: {invocation.name}")
+        if spec.authorize is not None:
+            authorized = spec.authorize(input)
+            if inspect.isawaitable(authorized):
+                authorized = await authorized
+            if not authorized:
+                raise PermissionError(f"tool call is not authorized: {invocation.name}")
+        arguments = spec.args_schema.model_validate(invocation.arguments)
+        if spec.handler is None:
+            raise ValueError(f"tool has no application handler: {invocation.name}")
+        result = spec.handler(arguments)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
 class LangChainModelStages:
     """Structured LangChain calls hidden behind the framework-neutral stage API."""
 
     def __init__(self, model: Any | None = None, settings: Settings | Any | None = None) -> None:
         self._settings = settings
         self._model = model
+        self._call_lock = asyncio.Lock()
+
+    def _provider(self) -> str:
+        return str(getattr(self._settings or get_settings(), "PROVIDER_NAME", ""))
+
+    async def _ainvoke(self, runnable: Any, messages: object) -> Any:
+        async with self._call_lock:
+            return await runnable.ainvoke(messages)
 
     def _chat(self) -> Any:
         if self._model is not None:
@@ -160,9 +245,135 @@ class LangChainModelStages:
         return messages
 
     async def _structured(self, schema: type[Any], messages: list[Any]) -> Any:
-        structured = self._chat().with_structured_output(schema)
-        value = await structured.ainvoke(messages)
+        kwargs: dict[str, object] = {}
+        if self._provider() == "local":
+            kwargs.update(method="function_calling", strict=True)
+        structured = self._chat().with_structured_output(schema, **kwargs)
+        value = await self._ainvoke(structured, messages)
         return schema.model_validate(value)
+
+    @staticmethod
+    def parse_tool_call(
+        response: object,
+        allowed_names: Sequence[str],
+        *,
+        tool_choice: ToolChoice = "auto",
+    ) -> ToolInvocation | None:
+        if isinstance(response, Mapping):
+            calls = response.get("tool_calls")
+        else:
+            calls = getattr(response, "tool_calls", None)
+        if not isinstance(calls, list):
+            calls = []
+        if tool_choice == "none":
+            if calls:
+                raise ValueError("tool call returned when tool choice is none")
+            return None
+        if len(calls) > 1:
+            raise ValueError("multiple tool calls are not supported by the serialized pilot")
+        if not calls:
+            if tool_choice == "required" or (
+                isinstance(tool_choice, str)
+                and tool_choice not in {"auto", "none", "required"}
+            ):
+                raise ValueError("required tool call was not returned")
+            return None
+        raw_call = calls[0]
+        if not isinstance(raw_call, Mapping):
+            raise ValueError("malformed tool call")
+        call_id = raw_call.get("id")
+        name = raw_call.get("name")
+        arguments = raw_call.get("args", raw_call.get("arguments"))
+        if (
+            not isinstance(call_id, str)
+            or not call_id
+            or not isinstance(name, str)
+            or not name
+            or not isinstance(arguments, Mapping)
+        ):
+            raise ValueError("malformed tool call")
+        if name not in allowed_names:
+            raise ValueError(f"unknown tool call: {name}")
+        expected_name: str | None = None
+        if isinstance(tool_choice, str) and tool_choice not in {
+            "auto",
+            "none",
+            "required",
+        }:
+            expected_name = tool_choice
+        elif isinstance(tool_choice, Mapping):
+            function = tool_choice.get("function")
+            if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+                expected_name = function["name"]
+        if expected_name is not None and name != expected_name:
+            raise ValueError("model returned a different named tool")
+        return ToolInvocation(
+            callId=call_id,
+            name=name,
+            arguments=dict(arguments),
+        )
+
+    async def tool_call(
+        self,
+        input: AgentTurnInput,
+        tools: Sequence[Mapping[str, object] | object],
+        *,
+        tool_choice: ToolChoice = "auto",
+    ) -> ToolInvocation | None:
+        specs = _tool_specs(tools)
+        allowed_names = [spec.name for spec in specs]
+        if tool_choice != "none" and not specs:
+            raise ValueError("tool call requires at least one application tool")
+        if (
+            isinstance(tool_choice, str)
+            and tool_choice not in {"auto", "none", "required"}
+            and tool_choice not in allowed_names
+        ):
+            raise ValueError(f"unknown requested tool: {tool_choice}")
+        if isinstance(tool_choice, Mapping):
+            function = tool_choice.get("function")
+            name = function.get("name") if isinstance(function, Mapping) else None
+            if (
+                tool_choice.get("type") != "function"
+                or not isinstance(name, str)
+                or name not in allowed_names
+            ):
+                raise ValueError("invalid named tool choice")
+            request_choice: object = dict(tool_choice)
+        else:
+            request_choice = tool_choice
+        chat = self._chat()
+        if tool_choice == "none":
+            runnable = chat
+        else:
+            definitions = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": spec.name,
+                        "description": spec.description,
+                        "parameters": spec.args_schema.model_json_schema(),
+                    },
+                }
+                for spec in specs
+            ]
+            runnable = chat.bind_tools(
+                definitions,
+                tool_choice=request_choice,
+                parallel_tool_calls=False,
+                strict=True,
+            )
+        response = await self._ainvoke(runnable, self._messages(input))
+        invocation = self.parse_tool_call(
+            response,
+            allowed_names,
+            tool_choice=tool_choice,
+        )
+        if invocation is not None:
+            next(
+                spec for spec in specs if spec.name == invocation.name
+            ).args_schema.model_validate(invocation.arguments)
+        return invocation
 
     async def classify(self, input: AgentTurnInput) -> RetrievalDecision:
         return cast(

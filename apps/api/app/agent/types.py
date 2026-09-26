@@ -8,6 +8,21 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.rag.types import Citation, GroundedBundle, GroundingBundle
 
+ToolChoice: TypeAlias = Literal["auto", "none", "required"] | str | Mapping[str, object]
+
+
+class ToolInvocation(BaseModel):
+    """A parsed model tool call; execution happens only in the application."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, populate_by_name=True
+    )
+
+    call_id: str = Field(min_length=1, alias="callId")
+    name: str = Field(min_length=1)
+    arguments: dict[str, object]
+
+
 
 class AgentMessage(BaseModel):
     """The only message shape allowed to cross the runner boundary."""

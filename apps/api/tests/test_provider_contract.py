@@ -299,7 +299,9 @@ async def test_grounded_question_route_runs_local_provider_end_to_end(
             self.kwargs = kwargs
             self.__class__.instances.append(self)
 
-        def with_structured_output(self, schema: type[object]) -> StructuredCall:
+        def with_structured_output(
+            self, schema: type[object], **_kwargs: object
+        ) -> StructuredCall:
             return StructuredCall(schema)
 
     class LocalRetriever:

@@ -17,6 +17,8 @@ class VllmProfile:
     tokenizer_id: str
     tokenizer_revision: str
     reasoning_parser: str
+    tool_call_parser: str
+    enable_auto_tool_choice: bool
     chat_template_kwargs: Mapping[str, bool]
     tensor_parallel_size: int
 
@@ -32,6 +34,8 @@ QWEN3_VLLM_PROFILE = VllmProfile(
     tokenizer_id="Qwen/Qwen3-8B",
     tokenizer_revision="b968826d9c46dd6066d109eabc6255188de91218",
     reasoning_parser="qwen3",
+    tool_call_parser="hermes",
+    enable_auto_tool_choice=True,
     chat_template_kwargs=MappingProxyType({"enable_thinking": False}),
     tensor_parallel_size=1,
 )
