@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
+from app.config import Settings
 from app.rag.retriever import PineconeRetriever
-from app.rag.types import GroundedBundle, InsufficientEvidenceBundle, UnavailableBundle
+from app.rag.types import (
+    GroundedBundle,
+    GroundingPassage,
+    InsufficientEvidenceBundle,
+    UnavailableBundle,
+)
 
 
 def settings(**overrides: object) -> SimpleNamespace:
@@ -26,6 +34,33 @@ def settings(**overrides: object) -> SimpleNamespace:
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_invalid_quality_settings_use_dense_defaults() -> None:
+    config = Settings(
+        PINECONE_API_KEY="test-key",
+        PINECONE_INDEX_NAME="test-index",
+        PINECONE_CORPUS_REVISION="rev-1",
+        OPENROUTER_API_KEY="provider-key",
+        OPENROUTER_LLM_MODEL="provider-model",
+        RAG_CANDIDATE_TOP_K="invalid",
+        RAG_ACCEPTED_TOP_K="invalid",
+        RAG_MIN_SCORE="invalid",
+        RAG_HIERARCHY_EXPANSION="invalid",
+        RAG_RERANKER_ENABLED="invalid",
+        RAG_RERANKER_MAX_CANDIDATES="invalid",
+        RAG_RERANKER_TIMEOUT_MS="invalid",
+        RAG_MAX_CONTEXT_CHARS="invalid",
+    )
+
+    assert config.RAG_CANDIDATE_TOP_K == 20
+    assert config.RAG_ACCEPTED_TOP_K == 8
+    assert config.RAG_MIN_SCORE == 0
+    assert config.RAG_HIERARCHY_EXPANSION is False
+    assert config.RAG_RERANKER_ENABLED is False
+    assert config.RAG_RERANKER_MAX_CANDIDATES == 20
+    assert config.RAG_RERANKER_TIMEOUT_MS == 100
+    assert config.RAG_MAX_CONTEXT_CHARS == 12_000
 
 
 def match(
@@ -245,6 +280,203 @@ async def test_retriever_reranks_by_query_term_overlap_when_enabled() -> None:
         "term-match",
         "score-first",
     ]
+
+
+@pytest.mark.asyncio
+async def test_retriever_reranks_only_prefix_and_preserves_dense_suffix() -> None:
+    dense = [
+        match("score-first", score=0.9, text="grammar lesson"),
+        match("term-match", score=0.7, text="dhamma grammar"),
+        match("dense-third", score=0.8, text="unrelated"),
+        match("dense-fourth", score=0.6, text="unrelated"),
+    ]
+    seen: dict[str, object] = {}
+
+    async def rerank_fn(
+        query: str, candidates: list[GroundingPassage], max_candidates: int
+    ) -> list[GroundingPassage]:
+        seen.update(query=query, candidates=candidates, max_candidates=max_candidates)
+        return [candidates[1], candidates[0]]
+
+    retriever = PineconeRetriever(
+        settings(
+            RAG_RERANKER_ENABLED=True,
+            RAG_RERANKER_MAX_CANDIDATES=2,
+            RAG_ACCEPTED_TOP_K=4,
+        ),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": dense},
+        rerank_fn=rerank_fn,
+    )
+
+    result = await retriever.retrieve("dhamma", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert seen["query"] == "dhamma"
+    assert [
+        passage.id for passage in seen["candidates"]  # type: ignore[union-attr]
+    ] == ["score-first", "term-match"]
+    assert seen["max_candidates"] == 2
+    assert [passage.id for passage in result.passages] == [
+        "term-match",
+        "score-first",
+        "dense-third",
+        "dense-fourth",
+    ]
+    assert result.retrieval_metrics is not None
+    assert result.retrieval_metrics.reranker_used is True
+    assert result.retrieval_metrics.reranker_fallback_reason is None
+
+
+@pytest.mark.asyncio
+async def test_retriever_classifies_reranker_timeout_as_dense_fallback() -> None:
+    async def rerank_fn(*_args: object) -> list[GroundingPassage]:
+        await asyncio.sleep(0.05)
+        return []
+
+    retriever = PineconeRetriever(
+        settings(RAG_RERANKER_ENABLED=True, RAG_RERANKER_TIMEOUT_MS=1),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [
+                match("term-match", score=0.7),
+                match("score-first", score=0.9),
+            ]
+        },
+        rerank_fn=rerank_fn,
+    )
+
+    result = await retriever.retrieve("dhamma", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == [
+        "score-first",
+        "term-match",
+    ]
+    assert result.retrieval_metrics is not None
+    assert result.retrieval_metrics.reranker_fallback_reason == "timeout"
+    assert result.retrieval_metrics.reranker_used is False
+
+
+@pytest.mark.asyncio
+async def test_retriever_classifies_reranker_cancellation_as_dense_fallback() -> None:
+    async def rerank_fn(*_args: object) -> list[GroundingPassage]:
+        raise asyncio.CancelledError
+
+    retriever = PineconeRetriever(
+        settings(RAG_RERANKER_ENABLED=True),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [
+                match("term-match", score=0.7),
+                match("score-first", score=0.9),
+            ]
+        },
+        rerank_fn=rerank_fn,
+    )
+
+    result = await retriever.retrieve("dhamma", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == [
+        "score-first",
+        "term-match",
+    ]
+    assert result.retrieval_metrics is not None
+    assert result.retrieval_metrics.reranker_fallback_reason == "cancelled"
+    assert result.retrieval_metrics.reranker_used is False
+
+
+@pytest.mark.asyncio
+async def test_retriever_rejects_reranker_provenance_rewrite() -> None:
+    first = GroundingPassage(
+        id="first",
+        source="book-1",
+        title="Chapter 1",
+        source_version="source-version-1",
+        section="section-1",
+        parent_id="parent-1",
+        text="first",
+        score=0.9,
+        parent_text="parent",
+    )
+
+    def rerank_fn(*_args: object) -> list[GroundingPassage]:
+        return [replace(first, section="rewritten-section"), first]
+
+    retriever = PineconeRetriever(
+        settings(RAG_RERANKER_ENABLED=True),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [match("first", score=0.9), match("second", score=0.8)]
+        },
+        rerank_fn=rerank_fn,
+    )
+
+    result = await retriever.retrieve("dhamma", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == ["first", "second"]
+    assert result.retrieval_metrics is not None
+    assert result.retrieval_metrics.reranker_fallback_reason == "invalid-output"
+
+
+@pytest.mark.asyncio
+async def test_retriever_classifies_malformed_reranker_output_as_invalid() -> None:
+    def rerank_fn(*_args: object) -> None:
+        return None
+
+    retriever = PineconeRetriever(
+        settings(RAG_RERANKER_ENABLED=True),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [
+                match("term-match", score=0.7),
+                match("score-first", score=0.9),
+            ]
+        },
+        rerank_fn=rerank_fn,
+    )
+
+    result = await retriever.retrieve("dhamma", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == [
+        "score-first",
+        "term-match",
+    ]
+    assert result.retrieval_metrics is not None
+    assert result.retrieval_metrics.reranker_fallback_reason == "invalid-output"
+    assert result.retrieval_metrics.reranker_used is False
+
+
+@pytest.mark.asyncio
+async def test_retriever_classifies_quota_or_network_failure_as_unavailable_fallback() -> None:
+    def rerank_fn(*_args: object) -> list[GroundingPassage]:
+        raise RuntimeError("insufficient_quota")
+
+    retriever = PineconeRetriever(
+        settings(RAG_RERANKER_ENABLED=True),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [
+                match("term-match", score=0.7),
+                match("score-first", score=0.9),
+            ]
+        },
+        rerank_fn=rerank_fn,
+    )
+
+    result = await retriever.retrieve("dhamma", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == [
+        "score-first",
+        "term-match",
+    ]
+    assert result.retrieval_metrics is not None
+    assert result.retrieval_metrics.reranker_fallback_reason == "unavailable"
+    assert result.retrieval_metrics.reranker_used is False
 
 
 @pytest.mark.asyncio

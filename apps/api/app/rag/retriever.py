@@ -242,11 +242,22 @@ class PineconeRetriever:
                     reranked,
                     config.RAG_RERANKER_MAX_CANDIDATES,
                 ):
-                    candidates = reranked
+                    candidate_by_id = {
+                        item.id: item for item in rerank_candidates
+                    }
+                    candidates = [
+                        candidate_by_id[item.id] for item in reranked
+                    ] + dense_candidates[len(rerank_candidates) :]
                     reranker_used = True
                 else:
                     reranker_fallback_reason = "invalid-output"
                     candidates = dense_candidates
+            except asyncio.CancelledError:
+                reranker_latency_ms = (
+                    time.perf_counter() - reranker_started_at
+                ) * 1000
+                reranker_fallback_reason = "cancelled"
+                candidates = dense_candidates
             except asyncio.TimeoutError:
                 reranker_latency_ms = (
                     time.perf_counter() - reranker_started_at

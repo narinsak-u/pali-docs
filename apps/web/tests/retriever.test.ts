@@ -166,6 +166,128 @@ describe("retrieve", () => {
     );
   });
 
+  it("reranks only the configured prefix and preserves the dense suffix", async () => {
+    Object.assign(mockedConfig, {
+      RAG_RERANKER_ENABLED: true,
+      RAG_RERANKER_MAX_CANDIDATES: 2,
+      RAG_ACCEPTED_TOP_K: 4,
+    });
+    const dense = [
+      passage("score-first", 0.9, { text: "grammar lesson" }),
+      passage("term-match", 0.7, { text: "dhamma grammar" }),
+      passage("dense-third", 0.8, { text: "unrelated" }),
+      passage("dense-fourth", 0.75, { text: "unrelated" }),
+    ];
+    mockedQuery.mockResolvedValue(dense);
+    const rerankCandidates = vi.fn(async (_query, bounded) => [
+      bounded[1],
+      bounded[0],
+    ]);
+
+    const result = await retrieve(
+      { query: "dhamma", attempt: 0 },
+      undefined,
+      { rerankCandidates },
+    );
+
+    expect(rerankCandidates).toHaveBeenCalledWith(
+      "dhamma",
+      dense.slice(0, 2),
+      2,
+      undefined,
+    );
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages.map(({ id }) => id)).toEqual([
+      "term-match",
+      "score-first",
+      "dense-third",
+      "dense-fourth",
+    ]);
+    expect(result.retrievalMetrics).toMatchObject({
+      rerankerUsed: true,
+      rerankerFallbackReason: null,
+      rerankerModelVersion: "lexical-v1",
+      retrievalConfigVersion: "rag-v1",
+    });
+  });
+
+  it("classifies reranker cancellation as a dense fallback", async () => {
+    Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
+    const dense = [
+      passage("score-first", 0.9),
+      passage("term-match", 0.7),
+    ];
+    mockedQuery.mockResolvedValue(dense);
+    const controller = new AbortController();
+    const rerankCandidates = vi.fn(async () => {
+      controller.abort();
+      return dense;
+    });
+
+    const result = await retrieve(
+      { query: "dhamma", attempt: 0 },
+      controller.signal,
+      { rerankCandidates },
+    );
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages).toEqual(dense);
+    expect(result.retrievalMetrics).toMatchObject({
+      rerankerUsed: false,
+      rerankerFallbackReason: "cancelled",
+      rerankerModelVersion: "lexical-v1",
+      retrievalConfigVersion: "rag-v1",
+    });
+  });
+
+  it("rejects reranker provenance rewrites and retains the dense set", async () => {
+    Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
+    const first = passage("first", 0.9, {
+      sourceVersion: "source-version-1",
+      section: "section-1",
+      parentId: "parent-1",
+      parentText: "parent",
+    });
+    const second = passage("second", 0.8);
+    mockedQuery.mockResolvedValue([first, second]);
+    const rerankCandidates = vi.fn(async () => [
+      { ...first, section: "rewritten-section" },
+      second,
+    ]);
+
+    const result = await retrieve(
+      { query: "dhamma", attempt: 0 },
+      undefined,
+      { rerankCandidates },
+    );
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages).toEqual([first, second]);
+    expect(result.retrievalMetrics?.rerankerFallbackReason).toBe("invalid-output");
+  });
+
+  it("keeps dense candidates after a quota or network reranker failure", async () => {
+    Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
+    const dense = [passage("first", 0.9), passage("second", 0.8)];
+    mockedQuery.mockResolvedValue(dense);
+    const rerankCandidates = vi.fn(async () => {
+      throw new Error("insufficient_quota");
+    });
+
+    const result = await retrieve(
+      { query: "dhamma", attempt: 0 },
+      undefined,
+      { rerankCandidates },
+    );
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages).toEqual(dense);
+    expect(result.retrievalMetrics).toMatchObject({
+      rerankerUsed: false,
+      rerankerFallbackReason: "unavailable",
+    });
+  });
+
   it("reranks candidates by query-term overlap when enabled", async () => {
     Object.assign(mockedConfig, {
       RAG_RERANKER_ENABLED: true,

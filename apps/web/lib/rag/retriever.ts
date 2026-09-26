@@ -305,6 +305,7 @@ export async function retrieve(
         dependencies.rerankCandidates ?? rerankCandidates,
         signal,
       );
+      signal?.throwIfAborted();
       rerankerLatencyMs = performance.now() - rerankerStartedAt;
       if (
         isValidReranked(
@@ -313,7 +314,13 @@ export async function retrieve(
           config.RAG_RERANKER_MAX_CANDIDATES,
         )
       ) {
-        candidates = reranked;
+        const candidateById = new Map(
+          boundedCandidates.map((candidate) => [candidate.id, candidate]),
+        );
+        candidates = [
+          ...reranked.map((candidate) => candidateById.get(candidate.id)!),
+          ...denseCandidates.slice(boundedCandidates.length),
+        ];
         rerankerUsed = true;
       } else {
         rerankerFallbackReason = "invalid-output";
@@ -321,13 +328,19 @@ export async function retrieve(
       }
     } catch (error: unknown) {
       rerankerLatencyMs = performance.now() - rerankerStartedAt;
-      signal?.throwIfAborted();
-      rerankerFallbackReason =
-        error instanceof Error && error.message === "reranker timed out"
+      const errorName =
+        error !== null &&
+        typeof error === "object" &&
+        "name" in error &&
+        typeof error.name === "string"
+          ? error.name
+          : undefined;
+      const cancelled = signal?.aborted || errorName === "AbortError";
+      rerankerFallbackReason = cancelled
+        ? "cancelled"
+        : error instanceof Error && error.message === "reranker timed out"
           ? "timeout"
-          : error instanceof DOMException && error.name === "AbortError"
-            ? "cancelled"
-            : "unavailable";
+          : "unavailable";
       candidates = denseCandidates;
     }
   }
