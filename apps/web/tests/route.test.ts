@@ -110,7 +110,8 @@ function makeRequest(body: unknown, signal?: AbortSignal): Request {
     body: JSON.stringify(body),
     signal,
   });
-  return process.env.RAG_BACKEND === "langgraph" && process.env.FASTAPI_BASE_URL
+  return (process.env.RAG_BACKEND === "langgraph" && process.env.FASTAPI_BASE_URL) ||
+    process.env.RAG_CANARY_STATE !== undefined
     ? withAuthenticatedTenant(request, { tenantId: "tenant-a" })
     : request;
 }
@@ -399,9 +400,9 @@ describe("POST /api/question", () => {
       reasons: [],
     });
     try {
+      const unauthenticated = new Request("http://localhost/api/question");
+      expect(selectQuestionBackend(unauthenticated, "server-run")).toBe("ai-sdk");
       const request = makeRequest(validBody);
-      expect(selectQuestionBackend(request, "server-run")).toBe("ai-sdk");
-      withAuthenticatedTenant(request, { tenantId: "tenant-a" });
       expect(selectQuestionBackend(request, "server-run")).toBe("langgraph");
     } finally {
       gate.mockRestore();

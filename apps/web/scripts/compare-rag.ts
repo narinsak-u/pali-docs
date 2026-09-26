@@ -182,6 +182,8 @@ type FastApiRunner = AgentTurnRunner & {
   getRetrievedSourceIds(): string[];
 };
 
+type ObservedServingMetadata = NonNullable<AgentTurnRunner["observedServingMetadata"]>;
+
 function messageContent(message: SafeQuestionRequest["messages"][number]): string {
   return message.parts.map(({ text }) => text).join("");
 }
@@ -201,11 +203,15 @@ export function createFastApiRunner(options: {
 
   let retrievedSourceIds: string[] = [];
   let observedCorpusRevision: string | undefined;
+  let observedServingMetadata: ObservedServingMetadata | undefined;
 
   const runner: FastApiRunner = {
     supportsAccessScope: true,
     get observedCorpusRevision() {
       return observedCorpusRevision;
+    },
+    get observedServingMetadata() {
+      return observedServingMetadata;
     },
     getRetrievedSourceIds: () => [...retrievedSourceIds],
     async runTurn(
@@ -215,8 +221,41 @@ export function createFastApiRunner(options: {
     ): Promise<AgentTurnResult> {
       retrievedSourceIds = [];
       observedCorpusRevision = undefined;
+      observedServingMetadata = undefined;
       const requestSignal = signal ?? new AbortController().signal;
       const fetchImpl = options.fetchImpl ?? fetch;
+      const readyResponse = await fetchImpl(`${baseUrl}/readyz`, {
+        headers: { Authorization: `Bearer ${internalToken}` },
+        signal: requestSignal,
+      });
+      if (!readyResponse.ok) throw new Error(`FastAPI readiness failed with status ${readyResponse.status}`);
+      let readyPayload: unknown;
+      try {
+        readyPayload = await readyResponse.json();
+      } catch {
+        throw new Error("FastAPI readiness response was not JSON");
+      }
+      if (readyPayload === null || typeof readyPayload !== "object") {
+        throw new Error("FastAPI readiness identity is invalid");
+      }
+      const identity = readyPayload as Record<string, unknown>;
+      if (
+        typeof identity.model !== "string" || !identity.model.trim() ||
+        typeof identity.servingRevision !== "string" || !identity.servingRevision.trim()
+      ) {
+        throw new Error("FastAPI readiness identity is incomplete");
+      }
+      observedServingMetadata = {
+        model: identity.model.trim(),
+        servingRevision: identity.servingRevision.trim(),
+        ...(typeof identity.imageDigest === "string" && identity.imageDigest.trim()
+          ? { imageDigest: identity.imageDigest.trim() }
+          : {}),
+        ...(typeof identity.tokenizer === "string" && identity.tokenizer.trim()
+          ? { tokenizer: identity.tokenizer.trim() }
+          : {}),
+      };
+
       const response = await fetchImpl(`${baseUrl}/v1/question`, {
         method: "POST",
         headers: {

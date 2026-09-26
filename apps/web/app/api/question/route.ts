@@ -118,7 +118,24 @@ export async function POST(req: Request): Promise<Response> {
 
   const runId = globalThis.crypto.randomUUID();
   const accessScope = getAuthenticatedAccessScope(req);
+  const canaryState = readCanaryState();
+  if (canaryState !== undefined && accessScope === undefined) {
+    return new Response(JSON.stringify({ error: "authenticated access scope is required" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
   const backend = selectQuestionBackend(req, runId);
+  if (
+    accessScope === undefined &&
+    (canaryState !== undefined ||
+      (backend === "langgraph" && process.env.FASTAPI_BASE_URL?.trim() && process.env.FASTAPI_INTERNAL_TOKEN?.trim()))
+  ) {
+    return new Response(JSON.stringify({ error: "authenticated access scope is required" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   if (backend === "langgraph") {
     const baseUrl = process.env.FASTAPI_BASE_URL?.trim().replace(/\/+$/, "");
@@ -129,12 +146,6 @@ export async function POST(req: Request): Promise<Response> {
         reason: "missing_configuration",
       });
       return createAiSdkResponse(messages, runId, req, accessScope);
-    }
-    if (accessScope === undefined) {
-      return new Response(JSON.stringify({ error: "authenticated access scope is required" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
     }
     let backendResponse: Response;
     const backendSignal = AbortSignal.any([
