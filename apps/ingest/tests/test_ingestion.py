@@ -120,6 +120,76 @@ def test_chunk_ids_include_source_version_and_chunking_policy() -> None:
         title="Guide",
         policy=ChunkingPolicy(version="policy-b"),
     )[0].id
+def test_chunk_identity_includes_complete_policy_and_position_metadata() -> None:
+    text = "# Grammar\n\nA passage that is long enough to split."
+    base = chunk_text(
+        text,
+        source_id="docs/guide",
+        source_version="version-a",
+        title="Guide",
+        policy=ChunkingPolicy(version="policy-a", max_characters=20, overlap_characters=2),
+    )
+
+    assert base[0].id != chunk_text(
+        text,
+        source_id="docs/guide",
+        source_version="version-a",
+        title="Guide",
+        policy=ChunkingPolicy(version="policy-a", max_characters=21, overlap_characters=2),
+    )[0].id
+    assert base[0].id != chunk_text(
+        text,
+        source_id="docs/guide",
+        source_version="version-a",
+        title="Guide",
+        policy=ChunkingPolicy(version="policy-a", max_characters=20, overlap_characters=3),
+    )[0].id
+    assert [chunk.index for chunk in base] == list(range(len(base)))
+    assert all(chunk.chunking_policy.to_dict() == {
+        "version": "policy-a",
+        "maxCharacters": 20,
+        "overlapCharacters": 2,
+    } for chunk in base)
+
+
+def test_manifest_rejects_incomplete_chunk_hierarchy_metadata() -> None:
+    document = _document("# Intro\n\nA passage.")
+    chunks = chunk_text(document.text, source_id=document.source_id, source_version=document.source_version, title=document.title)
+    with pytest.raises(ManifestError, match="section"):
+        build_manifest(
+            [document],
+            [replace(chunks[0], section=None)],
+            embedding_model="embed-v1",
+            embedding_input_type="passage",
+            retrieval_policy_version="v1",
+        )
+
+
+def test_manifest_revision_includes_complete_chunking_policy() -> None:
+    document = _document("A passage.")
+    first = chunk_text(
+        document.text,
+        source_id=document.source_id,
+        source_version=document.source_version,
+        title=document.title,
+        policy=ChunkingPolicy(version="policy-a", max_characters=100, overlap_characters=2),
+    )
+    second = chunk_text(
+        document.text,
+        source_id=document.source_id,
+        source_version=document.source_version,
+        title=document.title,
+        policy=ChunkingPolicy(version="policy-a", max_characters=101, overlap_characters=2),
+    )
+    first_manifest = build_manifest(
+        [document], first, chunking_policy=ChunkingPolicy(version="policy-a", max_characters=100, overlap_characters=2),
+        embedding_model="embed-v1", embedding_input_type="passage", retrieval_policy_version="v1",
+    )
+    second_manifest = build_manifest(
+        [document], second, chunking_policy=ChunkingPolicy(version="policy-a", max_characters=101, overlap_characters=2),
+        embedding_model="embed-v1", embedding_input_type="passage", retrieval_policy_version="v1",
+    )
+    assert first_manifest.revision != second_manifest.revision
 
 
 
@@ -179,6 +249,10 @@ def test_publisher_stages_metadata_and_rejects_dimension_mismatch() -> None:
         "sourceVersion": "abc123",
         "parentId": chunks[0].parent_id,
         "parentText": chunks[0].parent_text,
+        "position": 0.0,
+        "embeddingModel": "llama-text-embed-v2",
+        "embeddingInputType": "passage",
+        "chunkingPolicy": '{"maxCharacters":1600,"overlapCharacters":200,"version":"hierarchical-v1"}',
     }
 
     bad = PineconePublisher(
@@ -200,6 +274,30 @@ def test_publisher_stages_metadata_and_rejects_dimension_mismatch() -> None:
             )
         )
 
+
+def test_publisher_rejects_incomplete_metadata_before_embedding() -> None:
+    document = _document("one")
+    chunks = chunk_text(
+        document.text,
+        source_id=document.source_id,
+        source_version=document.source_version,
+        title=document.title,
+    )
+    calls = 0
+
+    def embed(_texts: list[str]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"data": [{"values": [1.0]}]}
+
+    publisher = PineconePublisher(
+        IngestSettings(),
+        embed_fn=embed,
+        upsert_fn=lambda records, _namespace: {"upserted_count": len(records)},
+    )
+    with pytest.raises(PublishError, match="section"):
+        asyncio.run(publisher.publish([replace(chunks[0], section=None)], "rev-abc"))
+    assert calls == 0
 
 def test_manifest_immutable_promote_rollback_and_recovery(tmp_path: Path) -> None:
     store = ManifestStore(tmp_path)

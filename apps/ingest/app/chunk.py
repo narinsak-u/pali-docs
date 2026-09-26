@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Mapping
 
@@ -61,17 +62,19 @@ def _sections(text: str) -> list[tuple[int, str | None, str]]:
         return [(0, None, text.strip())]
     return sections
 
-
 def _chunk_id(
     source_id: str,
     source_version: str,
-    policy_version: str,
+    policy: ChunkingPolicy,
     index: int,
     text: str,
 ) -> str:
-    payload = (
-        f"{source_id}\0{source_version}\0{policy_version}\0{index}\0{text}"
-    ).encode("utf-8")
+    serialized_policy = json.dumps(
+        policy.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    payload = f"{source_id}\0{source_version}\0{serialized_policy}\0{index}\0{text}".encode(
+        "utf-8"
+    )
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -126,7 +129,7 @@ def chunk_text(
                         id=_chunk_id(
                             source_id,
                             source_version,
-                            selected_policy.version,
+                            selected_policy,
                             len(chunks),
                             chunk_text_value,
                         ),
@@ -139,6 +142,7 @@ def chunk_text(
                         section=section,
                         parent_text=section_body,
                         acl_metadata=acl,
+                        chunking_policy=selected_policy,
                     )
                 )
                 current = []
@@ -153,7 +157,7 @@ def chunk_text(
                     id=_chunk_id(
                         source_id,
                         source_version,
-                        selected_policy.version,
+                        selected_policy,
                         len(chunks),
                         chunk_text_value,
                     ),
@@ -166,9 +170,9 @@ def chunk_text(
                     section=section,
                     parent_text=section_body,
                     acl_metadata=acl,
+                    chunking_policy=selected_policy,
                 )
             )
-
     if not chunks:
         raise ChunkError("chunking produced no chunks")
     return tuple(chunks)

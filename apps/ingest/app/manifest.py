@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .chunk import _chunk_id, _parent_id
 from .types import (
     Chunk,
     ChunkingPolicy,
@@ -27,23 +28,83 @@ def _canonical_json(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
     )
+def _validate_chunks(
+    documents: tuple[SourceDocument, ...],
+    chunks: tuple[Chunk, ...],
+    policy: ChunkingPolicy,
+) -> None:
+    source_by_id = {document.source_id: document for document in documents}
+    seen_ids: set[str] = set()
+    next_position_by_source: dict[str, int] = {}
+    last_parent_by_source: dict[str, tuple[str, str, str, str]] = {}
+    section_index_by_source: dict[str, int] = {}
+    for _global_position, chunk in enumerate(chunks):
+        source = source_by_id.get(chunk.source_id)
+        if source is None:
+            raise ManifestError(f"chunk {chunk.id!r} references an unknown source")
+        if chunk.id in seen_ids:
+            raise ManifestError("duplicate chunk IDs")
+        seen_ids.add(chunk.id)
+        if chunk.source_version != source.source_version:
+            raise ManifestError(f"chunk {chunk.id!r} has an inconsistent source version")
+        expected_position = next_position_by_source.get(chunk.source_id, 0)
+        if chunk.index != expected_position:
+            raise ManifestError(f"chunk {chunk.id!r} has a non-deterministic position")
+        next_position_by_source[chunk.source_id] = expected_position + 1
+        if not chunk.section or not chunk.section.strip():
+            raise ManifestError(f"chunk {chunk.id!r} is missing section metadata")
+        if not chunk.parent_id or not chunk.parent_id.strip():
+            raise ManifestError(f"chunk {chunk.id!r} is missing parent identity")
+        if not chunk.parent_text or not chunk.parent_text.strip():
+            raise ManifestError(f"chunk {chunk.id!r} is missing parent text")
+        if not isinstance(chunk.acl_metadata, Mapping) or not chunk.acl_metadata:
+            raise ManifestError(f"chunk {chunk.id!r} is missing ACL metadata")
+        if dict(chunk.acl_metadata) != dict(source.acl_metadata):
+            raise ManifestError(f"chunk {chunk.id!r} has inconsistent ACL metadata")
+        if chunk.chunking_policy != policy:
+            raise ManifestError(f"chunk {chunk.id!r} has inconsistent chunking policy")
+        parent_key = (chunk.source_id, chunk.source_version, chunk.section, chunk.parent_text)
+        if parent_key != last_parent_by_source.get(chunk.source_id):
+            section_index_by_source[chunk.source_id] = section_index_by_source.get(chunk.source_id, -1) + 1
+            last_parent_by_source[chunk.source_id] = parent_key
+        expected_parent_id = _parent_id(
+            chunk.source_id,
+            chunk.source_version,
+            section_index_by_source[chunk.source_id],
+            chunk.section,
+        )
+        if chunk.parent_id != expected_parent_id:
+            raise ManifestError(f"chunk {chunk.id!r} has an inconsistent parent identity")
+        expected_id = _chunk_id(
+            chunk.source_id, chunk.source_version, policy, chunk.index, chunk.text
+        )
+        if chunk.id != expected_id:
+            raise ManifestError(f"chunk {chunk.id!r} has an inconsistent identity")
 
 
 def compute_revision(
     source_hashes: Iterable[str],
     *,
     chunking_version: str,
+    chunking_max_characters: int = 1_600,
+    chunking_overlap_characters: int = 200,
     embedding_model: str,
     embedding_input_type: str,
     retrieval_policy_version: str,
 ) -> str:
-    """Compute a revision from content and all policy/model identity inputs."""
     hashes = sorted(source_hashes)
+    if not hashes:
+        raise ManifestError("at least one source hash is required")
     if any(not value for value in hashes):
         raise ManifestError("source hashes must be non-empty")
+    policy = ChunkingPolicy(
+        version=chunking_version,
+        max_characters=chunking_max_characters,
+        overlap_characters=chunking_overlap_characters,
+    )
     payload = {
         "sourceHashes": hashes,
-        "chunkingVersion": chunking_version,
+        "chunkingPolicy": policy.to_dict(),
         "embeddingModel": embedding_model,
         "embeddingInputType": embedding_input_type,
         "retrievalPolicyVersion": retrieval_policy_version,
@@ -65,10 +126,17 @@ def build_manifest(
 ) -> CorpusManifest:
     source_list = tuple(documents)
     chunk_list = tuple(chunks)
+    if not source_list:
+        raise ManifestError("manifest requires at least one source")
+    if not chunk_list:
+        raise ManifestError("manifest requires at least one chunk")
     policy = chunking_policy or ChunkingPolicy()
+    _validate_chunks(source_list, chunk_list, policy)
     revision = compute_revision(
         (document.content_hash for document in source_list),
         chunking_version=policy.version,
+        chunking_max_characters=policy.max_characters,
+        chunking_overlap_characters=policy.overlap_characters,
         embedding_model=embedding_model,
         embedding_input_type=embedding_input_type,
         retrieval_policy_version=retrieval_policy_version,
@@ -82,12 +150,6 @@ def build_manifest(
         )
         for document in sorted(source_list, key=lambda item: item.source_id)
     )
-    expected_ids = {document.source_id for document in source_list}
-    chunk_ids = [chunk.id for chunk in chunk_list]
-    if len(chunk_ids) != len(set(chunk_ids)):
-        raise ManifestError("duplicate chunk IDs")
-    if any(chunk.source_id not in expected_ids for chunk in chunk_list):
-        raise ManifestError("chunk references an unknown source")
     return CorpusManifest(
         schema_version=schema_version,
         revision=revision,
@@ -191,6 +253,8 @@ class ManifestStore:
         expected_revision = compute_revision(
             (source.content_hash for source in manifest.sources),
             chunking_version=manifest.chunking_policy.version,
+            chunking_max_characters=manifest.chunking_policy.max_characters,
+            chunking_overlap_characters=manifest.chunking_policy.overlap_characters,
             embedding_model=manifest.embedding_model,
             embedding_input_type=manifest.embedding_input_type,
             retrieval_policy_version=manifest.retrieval_policy_version,

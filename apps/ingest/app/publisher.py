@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -91,11 +92,22 @@ def _metadata_value(value: object, key: str) -> object:
         return list(value)
     raise PublishError(f"metadata {key!r} is not representable by Pinecone")
 
-
-def _chunk_metadata(chunk: Chunk, revision: str) -> dict[str, object]:
+def _chunk_metadata(
+    chunk: Chunk,
+    revision: str,
+    *,
+    embedding_model: str,
+    embedding_input_type: str,
+) -> dict[str, object]:
     acl = chunk.acl_metadata
-    if not isinstance(acl, Mapping):
-        raise PublishError(f"chunk {chunk.id} ACL metadata must be a mapping")
+    if not isinstance(acl, Mapping) or not acl:
+        raise PublishError(f"chunk {chunk.id} ACL metadata must be a non-empty mapping")
+    if not chunk.section or not chunk.section.strip():
+        raise PublishError(f"chunk {chunk.id} is missing section metadata")
+    if not chunk.parent_id.strip():
+        raise PublishError(f"chunk {chunk.id} is missing parent identity")
+    if chunk.chunking_policy is None:
+        raise PublishError(f"chunk {chunk.id} is missing chunking policy")
 
     metadata: dict[str, object] = {}
     for key, value in acl.items():
@@ -112,10 +124,18 @@ def _chunk_metadata(chunk: Chunk, revision: str) -> dict[str, object]:
             "sourceId": _metadata_value(chunk.source_id, "sourceId"),
             "sourceVersion": _metadata_value(chunk.source_version, "sourceVersion"),
             "parentId": _metadata_value(chunk.parent_id, "parentId"),
+            "section": _metadata_value(chunk.section, "section"),
+            "position": _metadata_value(chunk.index, "position"),
+            "embeddingModel": _metadata_value(embedding_model, "embeddingModel"),
+            "embeddingInputType": _metadata_value(embedding_input_type, "embeddingInputType"),
+            "chunkingPolicy": json.dumps(
+                chunk.chunking_policy.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         }
     )
-    if chunk.section is not None:
-        metadata["section"] = _metadata_value(chunk.section, "section")
     if chunk.parent_text is not None:
         metadata["parentText"] = _metadata_value(chunk.parent_text, "parentText")
     return metadata
@@ -268,8 +288,25 @@ class PineconePublisher:
         batch_size = self.settings.embedding_batch_size
         if batch_size < 1:
             raise PublishError("embedding_batch_size must be positive")
+        positions_by_source: dict[str, int] = {}
+        for chunk in chunk_list:
+            expected_position = positions_by_source.get(chunk.source_id, 0)
+            if chunk.index != expected_position:
+                raise PublishError("chunk positions must be deterministic and contiguous")
+            positions_by_source[chunk.source_id] = expected_position + 1
+        policies = {chunk.chunking_policy for chunk in chunk_list}
+        if None in policies or len(policies) != 1:
+            raise PublishError("chunks must share one complete chunking policy")
 
-        metadata = [_chunk_metadata(chunk, revision) for chunk in chunk_list]
+        metadata = [
+            _chunk_metadata(
+                chunk,
+                revision,
+                embedding_model=self.settings.embedding_model,
+                embedding_input_type=self.settings.embedding_input_type,
+            )
+            for chunk in chunk_list
+        ]
         embeddings: list[list[float]] = []
         embed_fn = self._embed_fn or self._embed_with_pinecone
         for start in range(0, len(chunk_list), batch_size):

@@ -46,7 +46,7 @@ class Chunk:
     acl_metadata: Mapping[str, JsonValue] = field(
         default_factory=lambda: {"visibility": "public"}
     )
-
+    chunking_policy: ChunkingPolicy | None = None
     def __post_init__(self) -> None:
         if any(
             not value.strip()
