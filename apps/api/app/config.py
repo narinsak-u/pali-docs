@@ -39,6 +39,13 @@ def _use_dense_defaults_for_invalid_quality(
 ) -> object:
     if not isinstance(values, dict):
         return values
+    for field_name in ("RAG_HIERARCHY_EXPANSION", "RAG_RERANKER_ENABLED"):
+        raw_value = values.get(field_name)
+        if raw_value is not None and not isinstance(raw_value, bool) and raw_value not in (
+            "true",
+            "false",
+        ):
+            return {**values, **_DENSE_RAG_DEFAULTS}
     try:
         _RagQualitySettings.model_validate(values)
     except ValidationError:

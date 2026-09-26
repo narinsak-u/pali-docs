@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Any, TypeAlias
 
-from .chunk import _chunk_id
+from .chunk import _chunk_id, _parent_id
 from .config import IngestSettings, get_settings
 from .types import Chunk
 
@@ -99,6 +99,7 @@ def _chunk_metadata(
     embedding_model: str,
     embedding_input_type: str,
     max_parent_context_chars: int,
+    section_index: int,
 ) -> dict[str, object]:
     acl = chunk.acl_metadata
     if not isinstance(acl, Mapping) or not acl:
@@ -123,6 +124,14 @@ def _chunk_metadata(
     )
     if chunk.id != expected_id:
         raise PublishError(f"chunk {chunk.id} has an inconsistent child identity")
+    expected_parent_id = _parent_id(
+        chunk.source_id,
+        chunk.source_version,
+        section_index,
+        chunk.section,
+    )
+    if chunk.parent_id != expected_parent_id:
+        raise PublishError(f"chunk {chunk.id} has an inconsistent parent identity")
 
     metadata: dict[str, object] = {}
     for key, value in acl.items():
@@ -303,11 +312,20 @@ class PineconePublisher:
         if batch_size < 1:
             raise PublishError("embedding_batch_size must be positive")
         positions_by_source: dict[str, int] = {}
+        section_indices_by_source: dict[str, int] = {}
+        last_section_by_source: dict[str, str | None] = {}
+        parent_section_indices: list[int] = []
         for chunk in chunk_list:
             expected_position = positions_by_source.get(chunk.source_id, 0)
             if chunk.index != expected_position:
                 raise PublishError("chunk positions must be deterministic and contiguous")
             positions_by_source[chunk.source_id] = expected_position + 1
+            if chunk.source_id not in section_indices_by_source:
+                section_indices_by_source[chunk.source_id] = 0
+            elif chunk.section != last_section_by_source[chunk.source_id]:
+                section_indices_by_source[chunk.source_id] += 1
+            last_section_by_source[chunk.source_id] = chunk.section
+            parent_section_indices.append(section_indices_by_source[chunk.source_id])
         policies = {chunk.chunking_policy for chunk in chunk_list}
         if None in policies or len(policies) != 1:
             raise PublishError("chunks must share one complete chunking policy")
@@ -319,8 +337,11 @@ class PineconePublisher:
                 embedding_model=self.settings.embedding_model,
                 embedding_input_type=self.settings.embedding_input_type,
                 max_parent_context_chars=self.settings.max_parent_context_chars,
+                section_index=section_index,
             )
-            for chunk in chunk_list
+            for chunk, section_index in zip(
+                chunk_list, parent_section_indices, strict=True
+            )
         ]
         embeddings: list[list[float]] = []
         embed_fn = self._embed_fn or self._embed_with_pinecone

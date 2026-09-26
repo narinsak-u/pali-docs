@@ -371,6 +371,30 @@ def test_publisher_rejects_forged_child_identity_before_embedding() -> None:
     assert calls == 0
 
 
+def test_publisher_rejects_forged_parent_identity_before_external_calls() -> None:
+    document = _document("# Intro\n\none")
+    chunk = chunk_text(
+        document.text,
+        source_id=document.source_id,
+        source_version=document.source_version,
+        title=document.title,
+    )[0]
+    calls: list[str] = []
+
+    publisher = PineconePublisher(
+        IngestSettings(),
+        embed_fn=lambda _texts: calls.append("embed") or {"data": [{"values": [1.0]}]},
+        upsert_fn=lambda _records, _namespace: calls.append("upsert")
+        or {"upserted_count": 1},
+    )
+    with pytest.raises(PublishError, match="parent identity"):
+        asyncio.run(
+            publisher.publish([replace(chunk, parent_id="forged-parent-id")], "rev-abc")
+        )
+    assert calls == []
+
+
+
 def test_manifest_rejects_sources_without_chunks() -> None:
     first = _document("first", source_id="content/docs/first")
     second = _document("second", source_id="content/docs/second")

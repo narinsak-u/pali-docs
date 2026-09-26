@@ -62,6 +62,67 @@ def test_invalid_quality_settings_use_dense_defaults() -> None:
     assert config.RAG_RERANKER_TIMEOUT_MS == 100
     assert config.RAG_MAX_CONTEXT_CHARS == 12_000
 
+@pytest.mark.parametrize(
+    "raw_value",
+    ["yes", "1", "TRUE", "False", " true", "false "],
+)
+@pytest.mark.parametrize("field_name", ["RAG_HIERARCHY_EXPANSION", "RAG_RERANKER_ENABLED"])
+def test_noncanonical_boolean_quality_values_use_dense_defaults(
+    monkeypatch: pytest.MonkeyPatch, field_name: str, raw_value: str
+) -> None:
+    for quality_name in (
+        "RAG_CANDIDATE_TOP_K",
+        "RAG_ACCEPTED_TOP_K",
+        "RAG_MIN_SCORE",
+        "RAG_HIERARCHY_EXPANSION",
+        "RAG_RERANKER_ENABLED",
+        "RAG_RERANKER_MAX_CANDIDATES",
+        "RAG_RERANKER_TIMEOUT_MS",
+        "RAG_MAX_CONTEXT_CHARS",
+        "RAG_MAX_PARENT_CONTEXT_CHARS",
+    ):
+        monkeypatch.delenv(quality_name, raising=False)
+    monkeypatch.setenv(field_name, raw_value)
+    config = Settings(
+        PINECONE_API_KEY="test-key",
+        PINECONE_INDEX_NAME="test-index",
+        PINECONE_CORPUS_REVISION="rev-1",
+        OPENROUTER_API_KEY="provider-key",
+        OPENROUTER_LLM_MODEL="provider-model",
+    )
+
+    assert getattr(config, field_name) is False
+
+
+def test_canonical_boolean_quality_values_match_typescript_parity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for quality_name in (
+        "RAG_CANDIDATE_TOP_K",
+        "RAG_ACCEPTED_TOP_K",
+        "RAG_MIN_SCORE",
+        "RAG_HIERARCHY_EXPANSION",
+        "RAG_RERANKER_ENABLED",
+        "RAG_RERANKER_MAX_CANDIDATES",
+        "RAG_RERANKER_TIMEOUT_MS",
+        "RAG_MAX_CONTEXT_CHARS",
+        "RAG_MAX_PARENT_CONTEXT_CHARS",
+    ):
+        monkeypatch.delenv(quality_name, raising=False)
+    for raw_value, expected in (("true", True), ("false", False)):
+        monkeypatch.setenv("RAG_HIERARCHY_EXPANSION", raw_value)
+        monkeypatch.setenv("RAG_RERANKER_ENABLED", raw_value)
+        config = Settings(
+            PINECONE_API_KEY="test-key",
+            PINECONE_INDEX_NAME="test-index",
+            PINECONE_CORPUS_REVISION="rev-1",
+            OPENROUTER_API_KEY="provider-key",
+            OPENROUTER_LLM_MODEL="provider-model",
+        )
+
+        assert config.RAG_HIERARCHY_EXPANSION is expected
+        assert config.RAG_RERANKER_ENABLED is expected
+
 
 def match(
     identifier: str,
