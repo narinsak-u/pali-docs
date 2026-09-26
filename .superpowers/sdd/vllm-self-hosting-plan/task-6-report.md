@@ -103,3 +103,5 @@ Tests       36 passed (36)
 ```
 
 The external #42 reviewed-case/ProductionBaseline prerequisite and real GPU/provider measurements remain unavailable; no promotion or production quality claim is made.
+
+The comparator also rejects duplicate or overlapping expected/forbidden source mappings on every paired trace before aggregate metrics are calculated.
