@@ -119,7 +119,7 @@ def test_local_model_seam_rejects_values_above_safety_limits(
 
 def _route_request() -> Request:
     return Request(
-        {"type": "http", "method": "POST", "path": "/v1/question", "headers": []}
+        {"type": "http", "method": "POST", "path": "/v1/question", "headers": [(b"x-access-scope", b'{"tenantId":"tenant-test"}')]}
     )
 
 
@@ -372,7 +372,7 @@ async def test_grounded_question_route_runs_local_provider_end_to_end(
                 "type": "http",
                 "method": "POST",
                 "path": "/v1/question",
-                "headers": [],
+                "headers": [(b"x-access-scope", b'{"tenantId":"tenant-test"}')],
                 "receive": receive,
             }
         ),

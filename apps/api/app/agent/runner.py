@@ -223,11 +223,6 @@ class LangChainModelStages:
     def _chat(self) -> Any:
         configured_settings = self._settings
         if self._model is not None:
-            if (
-                configured_settings is not None
-                and getattr(configured_settings, "PROVIDER_NAME", None) == "local"
-            ):
-                _validate_local_settings(configured_settings)
             return self._model
         settings = configured_settings or get_settings()
         provider = settings.PROVIDER_NAME

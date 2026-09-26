@@ -223,9 +223,10 @@ async def question(
     request_id = _request_id(request)
     try:
         settings: Settings = get_settings()
+        provider = getattr(settings, "PROVIDER_NAME", "hosted")
         if payload.corpus_revision is not None and payload.corpus_revision != settings.PINECONE_CORPUS_REVISION:
             raise _internal_error(400, "invalid_request", "Invalid request")
-        if settings.PROVIDER_NAME == "local" and not access_scope:
+        if provider == "local" and not access_scope:
             raise _internal_error(401, "unauthorized", "Authenticated access scope is required")
         runner = create_langgraph_agent_turn_runner(settings=settings)
     except (ValidationError, ValueError, OSError, RuntimeError):
@@ -236,7 +237,6 @@ async def question(
         messages=[{"role": message.role, "content": message.content} for message in payload.messages],
         access_scope=access_scope,
     )
-    provider = getattr(settings, "PROVIDER_NAME", "hosted")
     timeout_seconds = getattr(settings, "LOCAL_LLM_TIMEOUT_SECONDS", None) if provider == "local" else None
     request.state.request_id = request_id
     request.state.provider = provider

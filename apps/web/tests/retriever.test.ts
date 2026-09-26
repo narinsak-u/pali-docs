@@ -93,7 +93,7 @@ describe("retrieve", () => {
     await retrieve({ query: "  dhamma  ", attempt: 0 });
 
     expect(mockedEmbed).toHaveBeenCalledWith("dhamma");
-    expect(mockedQuery).toHaveBeenCalledWith([0.1, 0.2], 4, undefined);
+    expect(mockedQuery).toHaveBeenCalledWith([0.1, 0.2], 4, undefined, undefined);
   });
   it("labels valid accepted passages with the configured corpus revision", async () => {
     const matching = passage("matching", 0.9);
