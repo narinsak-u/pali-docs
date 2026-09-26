@@ -189,8 +189,10 @@ export interface ProductionBaselineArtifact {
   artifactType: "ProductionBaseline";
   schemaVersion: 1;
   authoritative: true;
+  sourceIssue: 42;
   artifactId: string;
   corpusRevision: string;
+  attestation: string;
   provider: "hosted";
   thresholds: EvaluationThresholds;
 }
@@ -1256,8 +1258,10 @@ const productionBaselineSchema = z
     artifactType: z.literal("ProductionBaseline"),
     schemaVersion: z.literal(1),
     authoritative: z.literal(true),
+    sourceIssue: z.literal(42),
     artifactId: z.string().min(1),
     corpusRevision: z.string().min(1),
+    attestation: z.string().min(1),
     provider: z.literal("hosted"),
     thresholds: thresholdSchema,
   })
@@ -1394,6 +1398,34 @@ function verifiedComparison(value: unknown): ProviderComparison | undefined {
 
 // The attestation is intentionally checked before accepting any persisted comparison.
 
+function baselineAttestationSecret(): string | undefined {
+  const secret = process.env.RAG_BASELINE_ATTESTATION_SECRET?.trim();
+  return secret || undefined;
+}
+
+export function attestProductionBaseline(value: Omit<ProductionBaselineArtifact, "attestation">): string | undefined {
+  const secret = baselineAttestationSecret();
+  if (secret === undefined) return undefined;
+  return createHmac("sha256", secret).update(JSON.stringify(canonicalEvidence(value))).digest("hex");
+}
+
+function validBaselineAttestation(value: ProductionBaselineArtifact): boolean {
+  const expected = attestProductionBaseline({
+    artifactType: value.artifactType,
+    schemaVersion: value.schemaVersion,
+    authoritative: value.authoritative,
+    sourceIssue: value.sourceIssue,
+    artifactId: value.artifactId,
+    corpusRevision: value.corpusRevision,
+    provider: value.provider,
+    thresholds: value.thresholds,
+  });
+  if (expected === undefined) return false;
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const actualBuffer = Buffer.from(value.attestation, "utf8");
+  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
 export function decidePromotion(options: {
   comparison: unknown;
   reviewedCases: unknown;
@@ -1419,6 +1451,7 @@ export function decidePromotion(options: {
   } else {
     const parsed = productionBaselineSchema.safeParse(options.productionBaseline);
     if (!parsed.success) reasons.push("authoritative ProductionBaseline artifact is invalid");
+    else if (!validBaselineAttestation(parsed.data)) reasons.push("ProductionBaseline attestation is invalid");
     else baseline = parsed.data;
   }
   if (!cases || !baseline) return { promote: false, reasons };

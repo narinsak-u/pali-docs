@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 beforeAll(() => {
   vi.stubEnv("RAG_PROMOTION_ATTESTATION_SECRET", "review-blockers-test-secret");
+  vi.stubEnv("RAG_BASELINE_ATTESTATION_SECRET", "review-baseline-test-secret");
 });
 afterAll(() => {
   vi.unstubAllEnvs();
 });
 import {
+  attestProductionBaseline,
   compareProviderEvaluations,
   decidePromotion,
   type PairedEvaluation,
@@ -275,15 +277,19 @@ describe("whole-branch blocker regressions", () => {
           },
         ],
       },
-      productionBaseline: {
-        artifactType: "ProductionBaseline",
-        schemaVersion: 1,
-        authoritative: true,
-        artifactId: "baseline-1",
-        corpusRevision: "corpus-1",
-        provider: "hosted",
-        thresholds,
-      },
+      productionBaseline: (() => {
+        const unsigned = {
+          artifactType: "ProductionBaseline" as const,
+          schemaVersion: 1 as const,
+          authoritative: true as const,
+          sourceIssue: 42 as const,
+          artifactId: "baseline-1",
+          corpusRevision: "corpus-1",
+          provider: "hosted" as const,
+          thresholds,
+        };
+        return { ...unsigned, attestation: attestProductionBaseline(unsigned)! };
+      })(),
       rollbackReady: true,
     });
 

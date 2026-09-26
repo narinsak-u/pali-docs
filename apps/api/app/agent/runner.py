@@ -850,6 +850,7 @@ class LangGraphAgentRunner:
                 "grounded_answer",
                 "repair_citations",
                 "suggestions",
+                "tool_call",
             )
         )
         return cast(AgentModelStages, self._stages if canonical else _LegacyStageAdapter(self._stages))

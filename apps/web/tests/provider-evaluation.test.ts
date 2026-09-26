@@ -4,6 +4,7 @@ import type {
   AgentTurnRunner,
 } from "@/lib/agent/types";
 import {
+  attestProductionBaseline,
   compareProviderEvaluations,
   decidePromotion,
   runPairedEvaluationCase,
@@ -14,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 beforeAll(() => {
   vi.stubEnv("RAG_PROMOTION_ATTESTATION_SECRET", "provider-evaluation-test-secret");
+  vi.stubEnv("RAG_BASELINE_ATTESTATION_SECRET", "provider-baseline-test-secret");
 });
 
 afterAll(() => {
@@ -348,15 +350,20 @@ describe("provider comparison and promotion gates", () => {
       corpusRevision: "corpus-1",
       cases: reviewedCaseList,
     } as const;
-    const productionBaseline = {
-      artifactType: "ProductionBaseline",
-      schemaVersion: 1,
-      authoritative: true,
+    const baselineUnsigned = {
+      artifactType: "ProductionBaseline" as const,
+      schemaVersion: 1 as const,
+      authoritative: true as const,
+      sourceIssue: 42 as const,
       artifactId: "baseline-2026-09-01",
       corpusRevision: "corpus-1",
-      provider: "hosted",
+      provider: "hosted" as const,
       thresholds: passingThresholds,
-    } as const;
+    };
+    const productionBaseline = {
+      ...baselineUnsigned,
+      attestation: attestProductionBaseline(baselineUnsigned)!,
+    };
 
     expect(
       decidePromotion({
@@ -366,6 +373,14 @@ describe("provider comparison and promotion gates", () => {
         rollbackReady: true,
       }),
     ).toEqual({ promote: true, reasons: [] });
+    expect(
+      decidePromotion({
+        comparison,
+        reviewedCases,
+        productionBaseline: { ...productionBaseline, attestation: "forged" },
+        rollbackReady: true,
+      }).reasons,
+    ).toContain("ProductionBaseline attestation is invalid");
     expect(
       decidePromotion({
         comparison,

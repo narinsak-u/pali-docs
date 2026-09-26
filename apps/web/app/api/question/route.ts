@@ -130,6 +130,12 @@ export async function POST(req: Request): Promise<Response> {
       });
       return createAiSdkResponse(messages, runId, req, accessScope);
     }
+    if (accessScope === undefined) {
+      return new Response(JSON.stringify({ error: "authenticated access scope is required" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     let backendResponse: Response;
     const backendSignal = AbortSignal.any([
       req.signal,

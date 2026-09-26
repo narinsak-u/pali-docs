@@ -104,12 +104,15 @@ const validBody = {
 };
 
 function makeRequest(body: unknown, signal?: AbortSignal): Request {
-  return new Request("http://localhost/api/question", {
+  const request = new Request("http://localhost/api/question", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal,
   });
+  return process.env.RAG_BACKEND === "langgraph" && process.env.FASTAPI_BASE_URL
+    ? withAuthenticatedTenant(request, { tenantId: "tenant-a" })
+    : request;
 }
 
 function makeLangGraphResponse(
@@ -303,6 +306,7 @@ describe("POST /api/question", () => {
         headers: {
           "Content-Type": "application/json",
           Authorization: "Bearer backend-token",
+          "X-Access-Scope": JSON.stringify({ tenant: "tenant-a" }),
         },
         signal: expect.any(AbortSignal),
       }),
@@ -317,13 +321,28 @@ describe("POST /api/question", () => {
     });
     expect(JSON.stringify(await response.json())).toContain("BACKEND ANSWER");
   });
+  it("rejects LangGraph retrieval without server-authenticated scope", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const response = await POST(new Request("http://localhost/api/question", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(validBody),
+    }));
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "authenticated access scope is required" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("forwards only the server-authenticated access scope to the LangGraph boundary", async () => {
     vi.stubEnv("RAG_BACKEND", "langgraph");
     vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
     vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
-    const request = withAuthenticatedTenant(makeRequest(validBody), {
-      tenantId: "tenant-a",
-    });
+    const request = makeRequest(validBody);
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
