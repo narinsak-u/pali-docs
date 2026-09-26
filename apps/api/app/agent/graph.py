@@ -224,14 +224,23 @@ def _unavailable_code(bundle: GroundingBundle | None) -> str:
 
 async def tool_node(state: AgentGraphState, config: object) -> dict[str, object]:
     configurable = _configurable(config)
-    dispatcher = configurable.get("tool_dispatcher")
-    definitions = configurable.get("tool_definitions", ())
-    if dispatcher is None or not definitions:
-        return {}
     turn = _input(state)
     tool_choice = configurable.get("tool_choice", turn.tool_choice)
     if tool_choice == "none":
         return {}
+    dispatcher = configurable.get("tool_dispatcher")
+    definitions = configurable.get("tool_definitions", ())
+    if dispatcher is None or not definitions:
+        await _emit_immediate(
+            config,
+            _event(
+                turn.run_id,
+                "tool.failed",
+                toolId="tool-dispatcher",
+                code="tool_unavailable",
+            ),
+        )
+        raise RuntimeError("requested tool execution is unavailable")
     stages = configurable.get("stages")
     tool_call = getattr(stages, "tool_call", None)
     if not callable(tool_call):
@@ -249,24 +258,21 @@ async def tool_node(state: AgentGraphState, config: object) -> dict[str, object]
         raise RuntimeError("tool stage returned an invalid invocation")
     run_id = turn.run_id
     call_id = str(invocation.call_id)
-    name = str(invocation.name)
     await _emit_immediate(
         config,
-        _event(run_id, "tool.started", toolId=call_id, name=name),
+        _event(run_id, "tool.started", toolId=call_id),
     )
     try:
-        result = await _call(dispatcher.dispatch, invocation, turn, config=config)
+        await _call(dispatcher.dispatch, invocation, turn, config=config)
     except Exception:
         await _emit_immediate(
             config,
-            _event(run_id, "tool.failed", toolId=call_id, name=name, code="tool_error"),
+            _event(run_id, "tool.failed", toolId=call_id, code="tool_error"),
         )
         raise
-    if hasattr(result, "model_dump"):
-        result = result.model_dump(mode="json")
     return {
         "events": [
-            _event(run_id, "tool.completed", toolId=call_id, name=name, result=result)
+            _event(run_id, "tool.completed", toolId=call_id)
         ]
     }
 async def _classify(

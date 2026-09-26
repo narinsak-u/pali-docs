@@ -806,6 +806,116 @@ const thresholdSchema = z
     maxToolFailureRate: z.number().min(0).max(1).optional(),
   })
   .strict();
+const traceScalarSchema = z.union([
+  z.string(),
+  z.number().finite(),
+  z.boolean(),
+]);
+const accessScopeValueSchema = z.union([
+  traceScalarSchema,
+  z.array(z.string()),
+]);
+const providerTraceSchema = z
+  .object({
+    schemaVersion: z.literal("v1"),
+    caseId: z.string().min(1),
+    provider: z.enum(["hosted", "local"]),
+    runId: z.string().min(1),
+    inputDigest: z.string().min(1),
+    accessScopeDigest: z.string().min(1),
+    accessScope: z.record(z.string(), accessScopeValueSchema).optional(),
+    corpusRevision: z.string().min(1),
+    model: z.string().min(1),
+    servingRevision: z.string().min(1),
+    endpoint: z.string().min(1).optional(),
+    imageDigest: z.string().min(1).optional(),
+    tokenizer: z.string().min(1).optional(),
+    decoding: z.record(z.string(), traceScalarSchema).optional(),
+    outcome: z.enum([
+      "grounded",
+      "insufficient-evidence",
+      "retrieval-unavailable",
+      "unsupported-answer",
+      "failed",
+    ]),
+    grounding: z
+      .object({
+        corpusRevision: z.string().min(1),
+        expectedSourceIds: z.array(z.string().min(1)),
+        forbiddenSourceIds: z.array(z.string().min(1)),
+        retrievedSourceIds: z.array(z.string().min(1)),
+        sourceRecall: z.number().finite().min(0).max(1),
+      })
+      .strict(),
+    citations: z
+      .object({
+        sourceIds: z.array(z.string().min(1)),
+        precision: z.number().finite().min(0).max(1),
+        completeness: z.number().finite().min(0).max(1),
+        violations: z.array(z.string().min(1)),
+      })
+      .strict(),
+    quality: z
+      .object({
+        outcomeCorrect: z.boolean(),
+        grounding: z.object({ sourceRecall: z.number().finite().min(0).max(1) }).strict(),
+        citations: z
+          .object({
+            precision: z.number().finite().min(0).max(1),
+            completeness: z.number().finite().min(0).max(1),
+          })
+          .strict(),
+      })
+      .strict(),
+    unicode: z
+      .object({
+        inputCodePointCount: z.number().int().nonnegative(),
+        inputNonAsciiCount: z.number().int().nonnegative(),
+        outputCodePointCount: z.number().int().nonnegative(),
+        outputNonAsciiCount: z.number().int().nonnegative(),
+        outputNfc: z.boolean(),
+      })
+      .strict(),
+    latency: z
+      .object({
+        totalMs: z.number().finite().nonnegative(),
+        retrievalMs: z.number().finite().nonnegative(),
+        generationMs: z.number().finite().nonnegative(),
+      })
+      .strict(),
+    capacity: z
+      .object({
+        candidateCount: z.number().finite().nonnegative().optional(),
+        acceptedCount: z.number().finite().nonnegative().optional(),
+        promptTokens: z.number().finite().nonnegative().optional(),
+        completionTokens: z.number().finite().nonnegative().optional(),
+        queueMs: z.number().finite().nonnegative().optional(),
+      })
+      .strict(),
+    tools: z
+      .object({
+        attempted: z.number().int().nonnegative(),
+        succeeded: z.number().int().nonnegative(),
+        failed: z.number().int().nonnegative(),
+      })
+      .strict(),
+    toolTelemetryPresent: z.boolean(),
+    failure: z.string().min(1).optional(),
+    cancelled: z.boolean().optional(),
+    cost: z.number().finite().nonnegative().optional(),
+  })
+  .strict();
+const pairedEvaluationSchema = z
+  .object({
+    schemaVersion: z.literal("v1"),
+    caseId: z.string().min(1),
+    inputDigest: z.string().min(1),
+    accessScopeDigest: z.string().min(1),
+    corpusRevision: z.string().min(1),
+    hosted: providerTraceSchema,
+    local: providerTraceSchema,
+  })
+  .strict();
 
 const caseSchema = z
   .object({
@@ -935,10 +1045,12 @@ function verifiedComparison(value: unknown): ProviderComparison | undefined {
   if (value === null || typeof value !== "object") return undefined;
   const candidate = value as { paired?: unknown; thresholds?: unknown };
   try {
-    const recomputed = compareProviderEvaluations(
-      candidate.paired as readonly PairedEvaluation[],
-      candidate.thresholds as EvaluationThresholds,
-    );
+    const paired = pairedEvaluationSchema
+      .array()
+      .min(1)
+      .parse(candidate.paired);
+    const thresholds = thresholdSchema.parse(candidate.thresholds);
+    const recomputed = compareProviderEvaluations(paired, thresholds);
     return JSON.stringify(canonicalEvidence(recomputed)) ===
       JSON.stringify(canonicalEvidence(value))
       ? recomputed
@@ -976,6 +1088,36 @@ export function decidePromotion(options: {
     else baseline = parsed.data;
   }
   if (!cases || !baseline) return { promote: false, reasons };
+  const reviewedCasesById = new Map(cases.cases.map((evaluationCase) => [evaluationCase.id, evaluationCase]));
+  for (const item of comparison.paired) {
+    const evaluationCase = reviewedCasesById.get(item.caseId);
+    if (!evaluationCase) continue;
+    const expectedSourceIds = evaluationCase.expectedSourceIds;
+    const forbiddenSourceIds = evaluationCase.forbiddenSourceIds ?? [];
+    for (const provider of ["hosted", "local"] as const) {
+      const trace = item[provider];
+      if (trace.provider !== provider) {
+        reasons.push(`${provider} trace provider lineage mismatch for case ${item.caseId}`);
+      }
+      if (
+        trace.corpusRevision !== cases.corpusRevision ||
+        trace.grounding.corpusRevision !== cases.corpusRevision
+      ) {
+        reasons.push(`${provider} trace corpus lineage mismatch for case ${item.caseId}`);
+      }
+      if (
+        JSON.stringify(trace.grounding.expectedSourceIds) !==
+          JSON.stringify(expectedSourceIds) ||
+        JSON.stringify(trace.grounding.forbiddenSourceIds) !==
+          JSON.stringify(forbiddenSourceIds)
+      ) {
+        reasons.push(`${provider} trace source lineage mismatch for case ${item.caseId}`);
+      }
+      if (trace.quality.outcomeCorrect !== (trace.outcome === evaluationCase.expectedOutcome)) {
+        reasons.push(`${provider} trace outcome lineage mismatch for case ${item.caseId}`);
+      }
+    }
+  }
   reasons.push(...reviewedCaseViolations(cases.cases));
   if (cases.cases.length < 30) {
     reasons.push(

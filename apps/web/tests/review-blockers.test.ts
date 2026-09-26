@@ -30,7 +30,6 @@ const trace = {
   servingRevision: "vllm-1",
   outcome: "insufficient-evidence" as const,
   cancelled: false,
-  answer: "",
   grounding: {
     corpusRevision: "corpus-1",
     expectedSourceIds: [],
@@ -98,6 +97,56 @@ describe("whole-branch blocker regressions", () => {
   });
 });
 
+  it("rejects trace mappings that do not match authoritative reviewed cases", () => {
+    const original = paired();
+    const forgedPaired: PairedEvaluation[] = [
+      {
+        ...original,
+        local: {
+          ...original.local,
+          grounding: {
+            ...original.local.grounding,
+            expectedSourceIds: ["forged-source"],
+          },
+        },
+      },
+    ];
+    const comparison = compareProviderEvaluations(forgedPaired, thresholds);
+    const decision = decidePromotion({
+      comparison,
+      reviewedCases: {
+        artifactType: "ReviewedEvaluationCases",
+        schemaVersion: 1,
+        authoritative: true,
+        corpusRevision: "corpus-1",
+        cases: [
+          {
+            category: "insufficient-evidence",
+            id: "case-1",
+            language: "en",
+            question: "What is unknown?",
+            expectedOutcome: "insufficient-evidence",
+            expectedSourceIds: [],
+          },
+        ],
+      },
+      productionBaseline: {
+        artifactType: "ProductionBaseline",
+        schemaVersion: 1,
+        authoritative: true,
+        artifactId: "baseline-1",
+        corpusRevision: "corpus-1",
+        provider: "hosted",
+        thresholds,
+      },
+      rollbackReady: true,
+    });
+
+    expect(decision.promote).toBe(false);
+    expect(decision.reasons).toContain(
+      "local trace source lineage mismatch for case case-1",
+    );
+  });
 it("rejects rollback at the exact expiry boundary", () => {
   const gate = vi
     .spyOn(ProviderEvaluation, "decidePromotion")

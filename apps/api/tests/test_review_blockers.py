@@ -220,6 +220,38 @@ async def test_langgraph_runner_executes_application_tool_and_emits_lifecycle() 
         "citations.completed",
         "run.completed",
     ]
+    assert [events[1].payload, events[2].payload] == [
+        {"runId": "tool-run", "toolId": "call-1"},
+        {"runId": "tool-run", "toolId": "call-1"},
+    ]
+@pytest.mark.asyncio
+async def test_required_tool_without_dispatcher_fails_closed() -> None:
+    events = []
+    runner = LangGraphAgentRunner(
+        retriever=object(),
+        stages=ToolStages(),
+        tool_choice="required",
+    )
+
+    result = await runner.run_turn(
+        AgentTurnInput(
+            runId="missing-tool-run",
+            messages=[{"role": "user", "content": "echo"}],
+        ),
+        events.append,
+    )
+
+    assert result.outcome == "failed"
+    assert [event.event_type for event in events] == [
+        "run.started",
+        "tool.failed",
+        "run.failed",
+    ]
+    assert events[1].payload == {
+        "runId": "missing-tool-run",
+        "toolId": "tool-dispatcher",
+        "code": "tool_unavailable",
+    }
 
 
 def test_dispatcher_still_rejects_unauthorized_tool_calls() -> None:

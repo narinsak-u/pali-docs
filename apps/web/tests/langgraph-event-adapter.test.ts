@@ -119,6 +119,20 @@ describe("LangGraph retrieval event contract", () => {
       },
     ]);
   });
+  it("rejects internal tool names and results at the public SSE boundary", async () => {
+    await expect(
+      consume([
+        envelope(0, "tool.started", {
+          toolId: "retrieval-tool",
+          name: "private-internal-name",
+        }),
+        envelope(1, "tool.completed", {
+          toolId: "retrieval-tool",
+          result: { private: "value" },
+        }),
+      ]),
+    ).rejects.toThrow();
+  });
 
 
   it("rejects a new reranker success event without required telemetry dimensions", async () => {
