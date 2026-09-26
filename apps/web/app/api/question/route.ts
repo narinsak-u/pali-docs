@@ -7,14 +7,10 @@ import {
   createStructuredTraceSink,
 } from "@/lib/agent/structured-trace-sink";
 import type { AgentTurnRunner } from "@/lib/agent/types";
-import { getAuthenticatedAccessScope, getAuthenticatedTenantId } from "@/lib/config/canary-context";
-import {
-  readCanaryState,
-  selectInternalCanaryBackend,
-} from "@/lib/config/canary";
+import { getAuthenticatedAccessScope } from "@/lib/config/canary-context";
 import { getModelConfig } from "@/lib/config/model";
 import { getRagConfig } from "@/lib/config/rag";
-import { getRolloutConfig, selectRagBackend, type RagBackend } from "@/lib/config/rollout";
+import { selectQuestionBackend } from "@/lib/config/question-backend";
 import { isQuotaError } from "@/lib/services/quiz-pipeline";
 import {
   parseQuestionRequestBody,
@@ -93,19 +89,6 @@ function createAiSdkResponse(
     }
     return errorResponse(500, "internal_error", "Internal server error");
   }
-}
-
-export function selectQuestionBackend(
-  request: Request,
-  runId: string,
-): RagBackend {
-  const canaryState = readCanaryState();
-  const tenantId = getAuthenticatedTenantId(request);
-  if (canaryState === null || (canaryState !== undefined && tenantId === undefined)) {
-    return "ai-sdk";
-  }
-  if (canaryState === undefined) return selectRagBackend(runId, getRolloutConfig());
-  return selectInternalCanaryBackend({ tenantId: tenantId ?? "", requestId: runId }, canaryState);
 }
 
 export async function POST(req: Request): Promise<Response> {

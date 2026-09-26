@@ -77,7 +77,8 @@ vi.mock("ai", () => ({
   ),
 }));
 
-import { POST, selectQuestionBackend } from "@/app/api/question/route";
+import { POST } from "@/app/api/question/route";
+import { selectQuestionBackend } from "@/lib/config/question-backend";
 import {
   withAuthenticatedTenant,
 } from "@/lib/config/canary-context";

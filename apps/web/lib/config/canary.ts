@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { decidePromotion, type ProviderComparison, type PromotionDecision } from "@/lib/rag/provider-evaluation";
+import {
+  decidePromotion,
+  type ProductionBaselineArtifact,
+  type ProviderComparison,
+  type PromotionDecision,
+  type ReviewedCasesArtifact,
+} from "@/lib/rag/provider-evaluation";
 import type { RagBackend } from "@/lib/config/rollout";
 
 export const CANARY_OBSERVATION_WINDOW_MS = 60 * 60 * 1000;
@@ -66,9 +72,9 @@ const canaryStateSchema = z
           .strict(),
         input: z
           .object({
-            comparison: z.unknown(),
-            reviewedCases: z.unknown(),
-            productionBaseline: z.unknown(),
+            comparison: z.custom<ProviderComparison>(),
+            reviewedCases: z.custom<ReviewedCasesArtifact>(),
+            productionBaseline: z.custom<ProductionBaselineArtifact>(),
             rollbackReady: z.boolean().optional(),
           })
           .strict(),
