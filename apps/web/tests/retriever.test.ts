@@ -211,22 +211,20 @@ describe("retrieve", () => {
     });
   });
 
-  it("classifies reranker cancellation as a dense fallback", async () => {
+  it("classifies provider cancellation as a dense fallback", async () => {
     Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
     const dense = [
       passage("score-first", 0.9),
       passage("term-match", 0.7),
     ];
     mockedQuery.mockResolvedValue(dense);
-    const controller = new AbortController();
     const rerankCandidates = vi.fn(async () => {
-      controller.abort();
-      return dense;
+      throw new DOMException("cancelled", "AbortError");
     });
 
     const result = await retrieve(
       { query: "dhamma", attempt: 0 },
-      controller.signal,
+      undefined,
       { rerankCandidates },
     );
 
@@ -238,6 +236,24 @@ describe("retrieve", () => {
       rerankerModelVersion: "lexical-v1",
       retrievalConfigVersion: "rag-v1",
     });
+  });
+
+  it("propagates caller cancellation during reranking", async () => {
+    Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
+    mockedQuery.mockResolvedValue([passage("first", 0.9)]);
+    const controller = new AbortController();
+    const rerankCandidates = vi.fn(async () => {
+      controller.abort();
+      return [passage("first", 0.9)];
+    });
+
+    await expect(
+      retrieve(
+        { query: "dhamma", attempt: 0 },
+        controller.signal,
+        { rerankCandidates },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("rejects reranker provenance rewrites and retains the dense set", async () => {

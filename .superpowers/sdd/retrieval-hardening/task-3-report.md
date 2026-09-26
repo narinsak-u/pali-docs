@@ -33,3 +33,15 @@
 - Reranker model/configuration identifiers remain the Task 1 contract values (`lexical-v1` and `rag-v1`); production model selection remains an evaluation decision.
 - Rollout issue #48 remains blocked; no corpus, evaluation, or promotion artifacts were fabricated.
 - Existing untracked Python `__pycache__` directories were left untouched.
+
+## Review fix round 1
+
+- Restored caller cancellation propagation around reranking: an aborted request signal is rethrown rather than converted into a dense result. Provider-level `AbortError` cancellation without an aborted request signal remains a typed `cancelled` fallback with dense candidates and telemetry.
+- Updated the web tests to cover both provider cancellation fallback and request-abort propagation.
+- Review-fix TDD run: the new caller-cancellation regression failed before the production change because the retriever resolved a dense bundle; it passes after the fix.
+- `bunx vitest run tests/retriever.test.ts tests/rag-config.test.ts tests/langgraph-event-adapter.test.ts tests/rag-evaluation.test.ts`
+  - **PASS** — 4 files, 46 tests.
+- `./.venv/bin/pytest -q tests/test_retriever.py tests/test_graph.py`
+  - **PASS** — 25 tests.
+- `git diff --check`
+  - **PASS** — no whitespace errors.

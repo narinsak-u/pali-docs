@@ -327,6 +327,7 @@ export async function retrieve(
         candidates = denseCandidates;
       }
     } catch (error: unknown) {
+      signal?.throwIfAborted();
       rerankerLatencyMs = performance.now() - rerankerStartedAt;
       const errorName =
         error !== null &&
@@ -335,12 +336,12 @@ export async function retrieve(
         typeof error.name === "string"
           ? error.name
           : undefined;
-      const cancelled = signal?.aborted || errorName === "AbortError";
-      rerankerFallbackReason = cancelled
-        ? "cancelled"
-        : error instanceof Error && error.message === "reranker timed out"
-          ? "timeout"
-          : "unavailable";
+      rerankerFallbackReason =
+        errorName === "AbortError"
+          ? "cancelled"
+          : error instanceof Error && error.message === "reranker timed out"
+            ? "timeout"
+            : "unavailable";
       candidates = denseCandidates;
     }
   }
