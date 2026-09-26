@@ -44,6 +44,8 @@ function runnerFor(
   } = {},
 ): AgentTurnRunner {
   return {
+    supportsAccessScope: true,
+    supportsCostTelemetry: true,
     async runTurn(input: AgentTurnInput, sink) {
       const sourceIds = options.source
         ? Array.isArray(options.source)
@@ -66,20 +68,24 @@ function runnerFor(
         candidateCount: 2,
         acceptedCount: sourceIds.length,
       });
-      sink.emit({ type: "generation.started", runId: input.runId });
+      sink.emit({
+        type: "tool.started",
+        runId: input.runId,
+        toolId: "retrieval-tool",
+      });
       if (options.toolFailure) {
         sink.emit({
           type: "tool.failed",
           runId: input.runId,
-          tool: "retrieval-tool",
+          toolId: "retrieval-tool",
           code: options.toolFailure,
-        } as AgentEvent);
+        });
       } else {
         sink.emit({
           type: "tool.completed",
           runId: input.runId,
-          tool: "retrieval-tool",
-        } as AgentEvent);
+          toolId: "retrieval-tool",
+        });
       }
       if (options.failure) {
         sink.emit({ type: "run.failed", runId: input.runId, code: options.failure });
@@ -130,6 +136,8 @@ describe("provider evaluation traces", () => {
     const runner = (answer: string): AgentTurnRunner => {
       const base = runnerFor(answer, { source: "source-1" });
       return {
+        supportsAccessScope: true,
+        supportsCostTelemetry: true,
         async runTurn(input, sink, signal) {
           inputs.push(input);
           return base.runTurn(input, sink, signal);
@@ -342,6 +350,30 @@ describe("provider comparison and promotion gates", () => {
         rollbackReady: true,
       }).promote,
     ).toBe(false);
+    const invalidCases = {
+      ...reviewedCases,
+      cases: [
+        {
+          ...reviewedCases.cases[0],
+          expectedSourceIds: ["source-1", "source-1"],
+          forbiddenSourceIds: ["source-1"],
+        },
+        ...reviewedCases.cases.slice(1),
+      ],
+    };
+    const invalidDecision = decidePromotion({
+      comparison,
+      reviewedCases: invalidCases,
+      productionBaseline,
+      rollbackReady: true,
+    });
+    expect(invalidDecision.promote).toBe(false);
+    expect(invalidDecision.reasons).toEqual(
+      expect.arrayContaining([
+        "reviewed case reviewed-0 has duplicate expected source mappings",
+        "reviewed case reviewed-0 has overlapping source mappings",
+      ]),
+    );
   });
   it("rejects paired case, scope, and citation identity mismatches", async () => {
     const paired = await runPairedEvaluationCase({
@@ -383,6 +415,7 @@ describe("provider comparison and promotion gates", () => {
   });
   it("fails cost and tool gates when telemetry is absent", async () => {
     const noTelemetryRunner: AgentTurnRunner = {
+      supportsAccessScope: true,
       async runTurn(input, sink) {
         sink.emit({ type: "run.started", runId: input.runId });
         sink.emit({
@@ -421,5 +454,75 @@ describe("provider comparison and promotion gates", () => {
     expect(comparison.gates.local.violations).toEqual(
       expect.arrayContaining(["local cost telemetry is incomplete", "local tool telemetry is incomplete"]),
     );
+    await expect(
+      runPairedEvaluationCase({
+        evaluationCase,
+        hosted: noTelemetryRunner,
+        local: noTelemetryRunner,
+        hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
+        localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
+        corpusRevision: "corpus-1",
+        requireCostTelemetry: true,
+      }),
+    ).rejects.toThrow("cost telemetry");
+  });
+  it("rejects malformed tool lifecycle telemetry before tool gates can pass", async () => {
+    const malformedRunner: AgentTurnRunner = {
+      supportsAccessScope: true,
+      async runTurn(input, sink) {
+        sink.emit({ type: "run.started", runId: input.runId });
+        sink.emit({
+          type: "tool.completed",
+          runId: input.runId,
+          toolId: "orphaned-tool",
+        });
+        sink.emit({ type: "run.completed", runId: input.runId, outcome: "answered", cost: 0.1 });
+        return { outcome: "answered", answer: "answer", citations: [], suggestions: [] };
+      },
+    };
+    const paired = await runPairedEvaluationCase({
+      evaluationCase,
+      hosted: malformedRunner,
+      local: malformedRunner,
+      hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
+      localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
+      corpusRevision: "corpus-1",
+    });
+    expect(paired.hosted.toolTelemetryPresent).toBe(false);
+    expect(compareProviderEvaluations([paired], thresholds).gates.local.violations).toContain(
+      "local tool telemetry is incomplete",
+    );
+  });
+
+  it("redacts unknown access-scope keys and rejects runners without scope enforcement", async () => {
+    const scopedCase = {
+      ...evaluationCase,
+      accessScope: {
+        tenant: "tenant-1",
+        authorization: "Bearer secret",
+        session: "session-secret",
+        privateKey: "private-key",
+      },
+    };
+    const paired = await runPairedEvaluationCase({
+      evaluationCase: scopedCase,
+      hosted: runnerFor("answer", { source: "source-1" }),
+      local: runnerFor("answer", { source: "source-1" }),
+      hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
+      localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
+      corpusRevision: "corpus-1",
+    });
+    expect(paired.hosted.accessScope).toEqual({ tenant: "tenant-1" });
+    expect(JSON.stringify(paired)).not.toContain("Bearer secret");
+    await expect(
+      runPairedEvaluationCase({
+        evaluationCase: scopedCase,
+        hosted: { ...runnerFor("answer"), supportsAccessScope: false },
+        local: runnerFor("answer"),
+        hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
+        localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
+        corpusRevision: "corpus-1",
+      }),
+    ).rejects.toThrow("enforce AccessScope");
   });
 });

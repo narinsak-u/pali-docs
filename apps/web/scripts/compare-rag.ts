@@ -202,6 +202,7 @@ export function createFastApiRunner(options: {
   let retrievedSourceIds: string[] = [];
 
   const runner: FastApiRunner = {
+    supportsAccessScope: false,
     getRetrievedSourceIds: () => [...retrievedSourceIds],
     async runTurn(
       input: AgentTurnInput,
@@ -220,6 +221,7 @@ export function createFastApiRunner(options: {
         body: JSON.stringify({
           runId: input.runId,
           corpusRevision,
+          ...(input.accessScope === undefined ? {} : { accessScope: input.accessScope }),
           messages: input.messages.map((message) => ({
             role: message.role,
             content: messageContent(message),

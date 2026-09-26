@@ -72,14 +72,24 @@ export type AgentEvent =
       type: "run.completed";
       runId: string;
       outcome: AgentTurnOutcome;
+      cost?: number;
+      promptTokens?: number;
+      completionTokens?: number;
+      queueMs?: number;
     }
-  | { type: "run.failed"; runId: string; code: string };
+  | {
+      type: "tool.started" | "tool.completed" | "tool.failed";
+      runId: string;
+      toolId: string;
+      code?: string;
+    }
 
 export interface AgentEventSink {
   emit(event: AgentEvent): void;
 }
-
 export interface AgentTurnRunner {
+  supportsAccessScope?: boolean;
+  supportsCostTelemetry?: boolean;
   runTurn(
     input: AgentTurnInput,
     sink: AgentEventSink,

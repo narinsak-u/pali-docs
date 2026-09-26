@@ -1,6 +1,7 @@
 export interface RetrievalRequest {
   query: string;
   attempt: number;
+  accessScope?: Record<string, unknown>;
 }
 
 export interface Citation {

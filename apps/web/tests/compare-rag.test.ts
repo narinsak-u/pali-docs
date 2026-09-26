@@ -275,11 +275,16 @@ describe("FastAPI runner", () => {
       expect(JSON.parse(String(request.body))).toEqual({
         runId: "run-1",
         corpusRevision: "corpus-1",
+        accessScope: { tenant: "tenant-1", authorization: "not-forwarded" },
         messages: [{ role: "user", content: "What is Pali?" }],
       });
       return streamResponse(events);
     });
     const sink = { emit: vi.fn() };
+    const scopedInput = {
+      ...input,
+      accessScope: { tenant: "tenant-1", authorization: "not-forwarded" },
+    };
     const runner = createFastApiRunner({
       baseUrl: "https://api.example///",
       internalToken: "secret",
@@ -287,11 +292,15 @@ describe("FastAPI runner", () => {
       fetchImpl,
     });
 
-    await expect(runner.runTurn(input, sink)).resolves.toEqual({
+    await expect(runner.runTurn(scopedInput, sink)).resolves.toEqual({
       outcome: "answered",
       answer: "Pali is an ancient language.",
       citations: [
-        { id: "citation-1", source: "citation-only", title: "A source" },
+        {
+          id: "citation-1",
+          source: "citation-only",
+          title: "A source",
+        },
       ],
       suggestions: ["Tell me more"],
     });

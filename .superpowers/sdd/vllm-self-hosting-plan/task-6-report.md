@@ -83,3 +83,23 @@ Tests       19 passed (19)
 ```
 
 The authoritative #42 reviewed-case/ProductionBaseline prerequisite remains unavailable, and no baseline or promotion claim is made.
+
+## Review response 2
+
+The second follow-up review identified five additional fail-closed requirements:
+
+1. `AgentTurnInput.accessScope` now reaches the AI SDK retriever request. Runners advertise `supportsAccessScope`; paired evaluation rejects non-empty scopes when either runner cannot enforce them. The FastAPI comparison runner forwards the scope in its internal request body but explicitly advertises unsupported scope enforcement, so it cannot silently pass the evaluator gate.
+2. Tool telemetry is now a lifecycle state machine. Every tool must have one `tool.started` followed by exactly one `tool.completed` or `tool.failed`; orphan, duplicate, missing-ID, or duplicate-terminal events make telemetry incomplete.
+3. Reviewed expected and forbidden source mappings must each be unique and mutually disjoint before cohort metrics or promotion can pass.
+4. AccessScope trace projection is allow-listed (`tenant`, `tenantId`, `role`, `roles`, `documentIds`, `visibility`, `principalId`, and `permissions`); unknown keys, including authorization/session/private-key material, are excluded.
+5. The supported `run.completed` contract now exposes cost/token/queue telemetry fields. `runPairedEvaluationCase` accepts `requireCostTelemetry` and rejects runners that do not advertise the capability before execution; active comparison cost gates still fail closed for missing measurements.
+
+Updated focused evidence:
+
+```text
+$ cd apps/web && bunx vitest run tests/provider-evaluation.test.ts tests/compare-rag.test.ts tests/ai-sdk-runner.test.ts
+Test Files  3 passed (3)
+Tests       36 passed (36)
+```
+
+The external #42 reviewed-case/ProductionBaseline prerequisite and real GPU/provider measurements remain unavailable; no promotion or production quality claim is made.

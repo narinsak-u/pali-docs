@@ -185,6 +185,7 @@ interface RunMetrics {
   capacity: ProviderTrace["capacity"];
   tools: ProviderTrace["tools"];
   toolTelemetryPresent: boolean;
+  toolTelemetryMalformed: boolean;
 }
 
 const SAFE_CODE: Record<string, true> = {
@@ -208,13 +209,22 @@ function safeId(value: unknown): string | undefined {
 type SafeAccessScope = Record<string, string | number | boolean | string[]>;
 type EvaluationTurnInput = AgentTurnInput & { accessScope?: SafeAccessScope };
 
-const SENSITIVE_SCOPE_KEY = /(?:token|secret|password|api.?key|credential)/i;
+const SAFE_SCOPE_KEYS: Record<string, true> = {
+  tenant: true,
+  tenantId: true,
+  role: true,
+  roles: true,
+  documentIds: true,
+  visibility: true,
+  principalId: true,
+  permissions: true,
+};
 
 function normalizeAccessScope(scope: Record<string, unknown> | undefined): SafeAccessScope {
   if (!scope) return {};
   const normalized: SafeAccessScope = {};
   for (const key of Object.keys(scope).sort()) {
-    if (SENSITIVE_SCOPE_KEY.test(key)) continue;
+    if (SAFE_SCOPE_KEYS[key] !== true) continue;
     const value = scope[key];
     if (
       typeof value === "string" ||
@@ -353,11 +363,13 @@ function extractRunMetrics(): {
     retrievalAttempts: 0,
     retrievalMs: 0,
     generationMs: 0,
-    capacity: {},
     tools: { attempted: 0, succeeded: 0, failed: 0 },
     toolTelemetryPresent: false,
+    toolTelemetryMalformed: false,
   };
   let generationStarted: number | undefined;
+  const startedTools = new Set<string>();
+  const terminalTools = new Set<string>();
   const clock = () => performance.now();
   const sink: AgentEventSink = {
     emit(rawEvent: AgentEvent): void {
@@ -416,19 +428,43 @@ function extractRunMetrics(): {
           if (typeof event.queueMs === "number") metrics.capacity.queueMs = event.queueMs;
           break;
         case "tool.started":
-          metrics.toolTelemetryPresent = true;
-          metrics.tools.attempted += 1;
-          break;
         case "tool.completed":
-          metrics.toolTelemetryPresent = true;
-          metrics.tools.attempted += metrics.tools.attempted === 0 ? 1 : 0;
-          metrics.tools.succeeded += 1;
+        case "tool.failed": {
+          const toolId =
+            typeof event.toolId === "string"
+              ? event.toolId.trim()
+              : typeof event.tool === "string"
+                ? event.tool.trim()
+                : "";
+          if (!toolId) {
+            metrics.toolTelemetryMalformed = true;
+            metrics.toolTelemetryPresent = false;
+            break;
+          }
+          if (event.type === "tool.started") {
+            if (startedTools.has(toolId)) {
+              metrics.toolTelemetryMalformed = true;
+              metrics.toolTelemetryPresent = false;
+              break;
+            }
+            startedTools.add(toolId);
+            metrics.tools.attempted += 1;
+            break;
+          }
+          if (!startedTools.has(toolId) || terminalTools.has(toolId)) {
+            metrics.toolTelemetryMalformed = true;
+            metrics.toolTelemetryPresent = false;
+            break;
+          }
+          terminalTools.add(toolId);
+          if (event.type === "tool.completed") metrics.tools.succeeded += 1;
+          else metrics.tools.failed += 1;
+          metrics.toolTelemetryPresent =
+            !metrics.toolTelemetryMalformed &&
+            startedTools.size > 0 &&
+            terminalTools.size === startedTools.size;
           break;
-        case "tool.failed":
-          metrics.toolTelemetryPresent = true;
-          metrics.tools.attempted += metrics.tools.attempted === 0 ? 1 : 0;
-          metrics.tools.failed += 1;
-          break;
+        }
         default:
           break;
       }
@@ -438,6 +474,7 @@ function extractRunMetrics(): {
       }
     },
   };
+
   return { metrics, sink };
 }
 function evaluationCaseInput(evaluationCase: EvaluationCase): EvaluationTurnInput {
@@ -453,7 +490,6 @@ function evaluationCaseInput(evaluationCase: EvaluationCase): EvaluationTurnInpu
     ],
   };
 }
-
 async function runProvider(
   provider: EvaluationProvider,
   evaluationCase: EvaluationCase,
@@ -470,7 +506,7 @@ async function runProvider(
     .join("\n");
   const inputUnicode = unicodeMetrics(inputText);
   const { metrics, sink } = extractRunMetrics();
-  let startedAt = now();
+  const startedAt = now();
   let result: AgentTurnResult;
   try {
     result = await runner.runTurn(
@@ -570,8 +606,24 @@ export async function runPairedEvaluationCase(options: {
   localMetadata: ServingMetadata;
   corpusRevision: string;
   now?: () => number;
+  requireCostTelemetry?: boolean;
 }): Promise<PairedEvaluation> {
   const now = options.now ?? performance.now.bind(performance);
+  const accessScope = normalizeAccessScope(options.evaluationCase.accessScope);
+  if (
+    Object.keys(accessScope).length > 0 &&
+    (options.hosted.supportsAccessScope !== true ||
+      options.local.supportsAccessScope !== true)
+  ) {
+    throw new Error("provider evaluation requires runners that enforce AccessScope");
+  }
+  if (
+    options.requireCostTelemetry === true &&
+    (options.hosted.supportsCostTelemetry !== true ||
+      options.local.supportsCostTelemetry !== true)
+  ) {
+    throw new Error("provider evaluation requires runners with cost telemetry");
+  }
   const hosted = await runProvider(
     "hosted",
     options.evaluationCase,
@@ -809,6 +861,19 @@ function reviewedCaseViolations(cases: readonly EvaluationCase[]): string[] {
     seen.add(evaluationCase.id);
     counts[evaluationCase.category] += 1;
     const expectedSources = evaluationCase.expectedSourceIds.length;
+    if (new Set(evaluationCase.expectedSourceIds).size !== evaluationCase.expectedSourceIds.length) {
+      violations.push(`reviewed case ${evaluationCase.id} has duplicate expected source mappings`);
+    }
+    if (new Set(evaluationCase.forbiddenSourceIds).size !== evaluationCase.forbiddenSourceIds.length) {
+      violations.push(`reviewed case ${evaluationCase.id} has duplicate forbidden source mappings`);
+    }
+    if (
+      evaluationCase.expectedSourceIds.some((sourceId) =>
+        evaluationCase.forbiddenSourceIds.includes(sourceId),
+      )
+    ) {
+      violations.push(`reviewed case ${evaluationCase.id} has overlapping source mappings`);
+    }
     const valid =
       (evaluationCase.category === "thai-single-source" &&
         evaluationCase.language === "th" &&

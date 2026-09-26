@@ -261,6 +261,27 @@ describe("createAiSdkAgentTurnRunner", () => {
     ]);
     expect(terminalEvents(events)).toHaveLength(1);
   });
+  it("forwards AccessScope to the retriever seam", async () => {
+    const retrieve = vi.fn(async (_request: RetrievalRequest) => groundedBundle);
+    const dependencies = createDependencies({
+      retriever: { supportsAccessScope: true, retrieve },
+    });
+    const scopedInput = {
+      ...input,
+      accessScope: { tenant: "tenant-1", role: "learner" },
+    };
+
+    await createAiSdkAgentTurnRunner(dependencies).runTurn(scopedInput, captureEvents().sink);
+
+    expect(retrieve).toHaveBeenCalledWith(
+      {
+        query: "dhamma",
+        attempt: 1,
+        accessScope: { tenant: "tenant-1", role: "learner" },
+      },
+      undefined,
+    );
+  });
 
   it("rewrites weak evidence once and performs one final retrieval", async () => {
     const retrieve = vi

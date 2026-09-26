@@ -56,6 +56,7 @@ export type GroundedAnswerDraft = z.infer<typeof groundedAnswerDraftSchema>;
 export type DirectAnswerContent = z.infer<typeof directAnswerContentSchema>;
 
 export interface Retriever {
+  supportsAccessScope?: boolean;
   retrieve(
     request: RetrievalRequest,
     signal?: AbortSignal,
@@ -321,6 +322,7 @@ export function createAiSdkAgentTurnRunner(
     dependencies.generateSuggestions ?? defaults.generateSuggestions;
 
   return {
+    supportsAccessScope: retriever.supportsAccessScope === true,
     async runTurn(input, sink, signal): Promise<AgentTurnResult> {
       sink.emit({ type: "run.started", runId: input.runId });
 
@@ -369,7 +371,7 @@ export function createAiSdkAgentTurnRunner(
           });
           let bundle: GroundingBundle;
           try {
-            bundle = await retriever.retrieve({ query, attempt }, signal);
+            bundle = await retriever.retrieve({ query, attempt, accessScope: input.accessScope }, signal);
           } catch (error: unknown) {
             sink.emit({
               type: "retrieval.failed",
