@@ -315,6 +315,57 @@ describe("POST /api/question", () => {
     });
     expect(JSON.stringify(await response.json())).toContain("BACKEND ANSWER");
   });
+  it("uses only a serialized server-owned canary state for internal targeting", async () => {
+    vi.stubEnv(
+      "RAG_CANARY_STATE",
+      JSON.stringify({
+        schemaVersion: "v1",
+        state: "promoted",
+        target: "langgraph",
+        trafficPercent: 100,
+        cohortSalt: "server-owned",
+        startedAt: "2026-09-26T00:00:00.000Z",
+        observationEndsAt: "2026-09-26T01:00:00.000Z",
+        rollbackAvailableUntil: "2026-09-27T00:00:00.000Z",
+        promotedAt: "2026-09-26T01:00:00.000Z",
+      }),
+    );
+    vi.stubEnv("RAG_BACKEND", "ai-sdk");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      makeLangGraphResponse([
+        {
+          eventType: "run.started",
+          payload: { runId: "00000000-0000-4000-8000-000000000006" },
+        },
+        {
+          eventType: "run.completed",
+          payload: { runId: "00000000-0000-4000-8000-000000000006", outcome: "answered" },
+        },
+      ]),
+    );
+
+    const response = await POST(makeRequest({ ...validBody, backend: "ai-sdk" }));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocked.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("fails closed to the TypeScript runner for invalid serialized canary state", async () => {
+    vi.stubEnv("RAG_CANARY_STATE", "{\"state\":\"promoted\"}");
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocked.runTurn).toHaveBeenCalledTimes(1);
+  });
 
   it("keeps the explicit AI SDK override at one hundred percent LangGraph traffic", async () => {
     vi.stubEnv("RAG_BACKEND", "ai-sdk");

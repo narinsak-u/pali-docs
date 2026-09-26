@@ -7,6 +7,7 @@ import {
   createStructuredTraceSink,
 } from "@/lib/agent/structured-trace-sink";
 import type { AgentTurnRunner } from "@/lib/agent/types";
+import { readCanaryState, selectInternalCanaryBackend } from "@/lib/config/canary";
 import { getModelConfig } from "@/lib/config/model";
 import { getRagConfig } from "@/lib/config/rag";
 import { getRolloutConfig, selectRagBackend } from "@/lib/config/rollout";
@@ -94,7 +95,16 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const runId = globalThis.crypto.randomUUID();
-  const backend = selectRagBackend(runId, getRolloutConfig());
+  const canaryState = readCanaryState();
+  const backend =
+    canaryState === null
+      ? "ai-sdk"
+      : canaryState === undefined
+        ? selectRagBackend(runId, getRolloutConfig())
+        : selectInternalCanaryBackend(
+            { tenantId: runId, requestId: runId },
+            canaryState,
+          );
 
   if (backend === "langgraph") {
     const baseUrl = process.env.FASTAPI_BASE_URL?.trim().replace(/\/+$/, "");
