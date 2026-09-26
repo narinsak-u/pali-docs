@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -16,9 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .agent.runner import LangGraphAgentRunner, create_langgraph_agent_turn_runner
 from .agent.types import AgentEvent, AgentTurnInput
 from .config import Settings, get_settings
+from .observability import metrics
 
 router = APIRouter()
-
 MAX_MESSAGES = 20
 MAX_MESSAGE_CONTENT = 20_000
 MAX_TOTAL_CONTENT = 20_000
@@ -26,7 +28,6 @@ MAX_TOTAL_CONTENT = 20_000
 
 class QuestionMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
     role: Literal["system", "user", "assistant"]
     content: str = Field(min_length=1, max_length=MAX_MESSAGE_CONTENT)
 
@@ -40,12 +41,9 @@ class QuestionMessage(BaseModel):
 
 class QuestionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
     run_id: str | None = Field(default=None, min_length=1, max_length=200, alias="runId")
     thread_id: str | None = Field(default=None, min_length=1, max_length=200, alias="threadId")
-    corpus_revision: str | None = Field(
-        default=None, min_length=1, max_length=200, alias="corpusRevision"
-    )
+    corpus_revision: str | None = Field(default=None, min_length=1, max_length=200, alias="corpusRevision")
     messages: list[QuestionMessage] = Field(min_length=1, max_length=MAX_MESSAGES)
 
     @model_validator(mode="after")
@@ -58,14 +56,8 @@ class QuestionRequest(BaseModel):
         return self
 
 
-
-async def request_validation_error_handler(
-    _request: Request, _exc: RequestValidationError
-) -> JSONResponse:
-    return JSONResponse(
-        status_code=400,
-        content={"error": "invalid_request", "message": "Invalid request"},
-    )
+async def request_validation_error_handler(_request: Request, _exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"error": "invalid_request", "message": "Invalid request"})
 
 
 def _internal_error(status_code: int, error: str, message: str) -> HTTPException:
@@ -87,20 +79,35 @@ def _authorize(authorization: str | None, expected: str | None) -> None:
         raise _internal_error(403, "forbidden", "Authentication failed")
 
 
-async def http_exception_handler(
-    _request: Request, exc: HTTPException
-) -> JSONResponse:
+async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
     if isinstance(exc.detail, dict):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": "request_failed", "message": str(exc.detail)},
-    )
+    return JSONResponse(status_code=exc.status_code, content={"error": "request_failed", "message": str(exc.detail)})
 
 
-def _sse(event: AgentEvent) -> bytes:
-    return f"data: {json.dumps(event.as_dict(), separators=(',', ':'))}\n\n".encode(
-        "utf-8"
+def _request_id(request: Request) -> str:
+    supplied = request.headers.get("x-request-id", "")
+    if supplied and len(supplied) <= 128 and re.fullmatch(r"[A-Za-z0-9._:-]+", supplied):
+        return supplied
+    return str(uuid4())
+
+
+def _sse(event: AgentEvent, request_id: str) -> bytes:
+    payload = event.as_dict()
+    event_payload = payload.get("payload")
+    if isinstance(event_payload, dict):
+        payload["payload"] = {**event_payload, "requestId": request_id}
+    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n".encode("utf-8")
+
+
+def _timeout_event(run_id: str, request_id: str) -> AgentEvent:
+    return AgentEvent(
+        run_id=run_id,
+        event_id=str(uuid4()),
+        sequence=0,
+        event_type="run.failed",
+        timestamp=datetime.now(timezone.utc),
+        payload={"runId": run_id, "requestId": request_id, "code": "timeout"},
     )
 
 
@@ -121,7 +128,14 @@ async def _event_stream(
     request: Request,
     runner: LangGraphAgentRunner,
     turn: AgentTurnInput,
+    *,
+    request_id: str | None = None,
+    provider: str = "hosted",
+    timeout_seconds: float | None = None,
 ) -> AsyncIterator[bytes]:
+    request_id = request_id or getattr(request.state, "request_id", str(uuid4()))
+    provider = getattr(request.state, "provider", provider)
+    timeout_seconds = getattr(request.state, "timeout_seconds", timeout_seconds)
     queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
     cancellation = asyncio.Event()
 
@@ -134,8 +148,17 @@ async def _event_stream(
         finally:
             await queue.put(None)
 
+    async def timeout_watch() -> None:
+        if timeout_seconds is None:
+            return
+        await asyncio.sleep(timeout_seconds)
+        if not cancellation.is_set():
+            cancellation.set()
+            await queue.put(_timeout_event(turn.run_id, request_id))
+
     runner_task = asyncio.create_task(run())
     watcher_task = asyncio.create_task(_cancel_on_disconnect(request, cancellation))
+    timeout_task = asyncio.create_task(timeout_watch())
     terminal_seen = False
     try:
         while True:
@@ -146,14 +169,18 @@ async def _event_stream(
                 break
             if terminal_seen:
                 continue
-            yield _sse(event)
+            yield _sse(event, request_id)
             if event.event_type in {"run.completed", "run.failed"}:
                 terminal_seen = True
+                code = event.payload.get("code")
+                outcome = "completed" if event.event_type == "run.completed" else "timeout" if code == "timeout" else "cancelled" if code == "aborted" else "failed"
+                metrics.observe_request(provider=provider, outcome=outcome, code=str(code) if code else None)
     finally:
         cancellation.set()
         watcher_task.cancel()
+        timeout_task.cancel()
         runner_task.cancel()
-        await asyncio.gather(watcher_task, runner_task, return_exceptions=True)
+        await asyncio.gather(watcher_task, timeout_task, runner_task, return_exceptions=True)
 
 
 @router.post("/v1/question", tags=["question"])
@@ -163,26 +190,24 @@ async def question(
     authorization: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
     _authorize(authorization, _configured_token())
-
+    request_id = _request_id(request)
     try:
         settings: Settings = get_settings()
-        if (
-            payload.corpus_revision is not None
-            and payload.corpus_revision != settings.PINECONE_CORPUS_REVISION
-        ):
+        if payload.corpus_revision is not None and payload.corpus_revision != settings.PINECONE_CORPUS_REVISION:
             raise _internal_error(400, "invalid_request", "Invalid request")
         runner = create_langgraph_agent_turn_runner(settings=settings)
     except (ValidationError, ValueError, OSError, RuntimeError):
         raise _internal_error(503, "service_unavailable", "Question service unavailable")
-
     turn = AgentTurnInput(
         run_id=payload.run_id or str(uuid4()),
         thread_id=payload.thread_id,
-        messages=[
-            {"role": message.role, "content": message.content}
-            for message in payload.messages
-        ],
+        messages=[{"role": message.role, "content": message.content} for message in payload.messages],
     )
+    provider = getattr(settings, "PROVIDER_NAME", "hosted")
+    timeout_seconds = getattr(settings, "LOCAL_LLM_TIMEOUT_SECONDS", None) if provider == "local" else None
+    request.state.request_id = request_id
+    request.state.provider = provider
+    request.state.timeout_seconds = timeout_seconds
     return StreamingResponse(
         _event_stream(request, runner, turn),
         media_type="text/event-stream",
@@ -190,5 +215,6 @@ async def question(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "X-Request-ID": request_id,
         },
     )
