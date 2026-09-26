@@ -87,6 +87,8 @@ class LangChainModelStages:
             return self._model
         settings = self._settings or get_settings()
         provider = settings.PROVIDER_NAME
+        timeout: float | None = None
+        max_tokens: int | None = None
         if provider == "openrouter":
             api_key = settings.OPENROUTER_API_KEY
             model_name = settings.OPENROUTER_LLM_MODEL
@@ -95,17 +97,39 @@ class LangChainModelStages:
             api_key = settings.OPENCODE_API_KEY
             model_name = settings.OPENCODE_LLM_MODEL
             base_url = "https://opencode.ai/zen/go/v1"
+        elif provider == "local":
+            api_key = settings.LOCAL_LLM_API_KEY
+            model_name = settings.LOCAL_LLM_MODEL
+            base_url = settings.LOCAL_LLM_BASE_URL
+            timeout = settings.LOCAL_LLM_TIMEOUT_SECONDS
+            max_tokens = settings.LOCAL_LLM_MAX_OUTPUT_TOKENS
+            if (
+                not isinstance(base_url, str)
+                or not base_url.startswith(("http://", "https://"))
+                or not api_key
+                or not model_name
+                or not isinstance(timeout, (int, float))
+                or isinstance(timeout, bool)
+                or timeout <= 0
+                or not isinstance(max_tokens, int)
+                or isinstance(max_tokens, bool)
+                or max_tokens <= 0
+            ):
+                raise ValueError("Invalid local provider configuration")
         else:
             raise ValueError(f"Unsupported provider: {provider}")
         if not api_key or not model_name:
             raise ValueError(f"Missing credentials for provider: {provider}")
-        self._model = ChatOpenAI(
-            model=model_name,
-            api_key=api_key,
-            base_url=base_url,
-            temperature=0,
-            max_retries=0,
-        )
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "api_key": api_key,
+            "base_url": base_url,
+            "temperature": 0,
+            "max_retries": 0,
+        }
+        if provider == "local":
+            kwargs.update(timeout=timeout, max_tokens=max_tokens)
+        self._model = ChatOpenAI(**kwargs)
         return self._model
 
     @staticmethod

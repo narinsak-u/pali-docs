@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,11 +59,16 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(case_sensitive=True, extra="ignore")
 
-    PROVIDER_NAME: Literal["openrouter", "opencode"] = "openrouter"
+    PROVIDER_NAME: Literal["openrouter", "opencode", "local"] = "openrouter"
     OPENROUTER_API_KEY: str | None = None
     OPENROUTER_LLM_MODEL: str | None = None
     OPENCODE_API_KEY: str | None = None
     OPENCODE_LLM_MODEL: str | None = None
+    LOCAL_LLM_BASE_URL: str | None = None
+    LOCAL_LLM_API_KEY: str | None = None
+    LOCAL_LLM_MODEL: str | None = None
+    LOCAL_LLM_TIMEOUT_SECONDS: float = Field(default=60, gt=0, le=300)
+    LOCAL_LLM_MAX_OUTPUT_TOKENS: int = Field(default=1024, ge=1, le=32768)
 
     PINECONE_API_KEY: str = Field(min_length=1)
     PINECONE_INDEX_NAME: str = Field(min_length=1)
@@ -97,11 +103,27 @@ class Settings(BaseSettings):
                     "OPENROUTER_API_KEY and OPENROUTER_LLM_MODEL are required "
                     "when PROVIDER_NAME is openrouter"
                 )
-        elif not self.OPENCODE_API_KEY or not self.OPENCODE_LLM_MODEL:
-            raise ValueError(
-                "OPENCODE_API_KEY and OPENCODE_LLM_MODEL are required "
-                "when PROVIDER_NAME is opencode"
-            )
+        elif self.PROVIDER_NAME == "opencode":
+            if not self.OPENCODE_API_KEY or not self.OPENCODE_LLM_MODEL:
+                raise ValueError(
+                    "OPENCODE_API_KEY and OPENCODE_LLM_MODEL are required "
+                    "when PROVIDER_NAME is opencode"
+                )
+        else:
+            if (
+                not self.LOCAL_LLM_BASE_URL
+                or not self.LOCAL_LLM_API_KEY
+                or not self.LOCAL_LLM_MODEL
+            ):
+                raise ValueError(
+                    "LOCAL_LLM_BASE_URL, LOCAL_LLM_API_KEY, and LOCAL_LLM_MODEL "
+                    "are required when PROVIDER_NAME is local"
+                )
+            endpoint = urlsplit(self.LOCAL_LLM_BASE_URL)
+            if endpoint.scheme not in {"http", "https"} or not endpoint.netloc:
+                raise ValueError(
+                    "LOCAL_LLM_BASE_URL must be an absolute http(s) URL"
+                )
         return self
 
 
