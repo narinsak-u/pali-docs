@@ -60,6 +60,24 @@ const trace = {
   toolEvents: [],
   tools: { attempted: 0, succeeded: 0, failed: 0 },
   toolTelemetryPresent: false,
+  evidence: {
+    outcome: "insufficient-evidence" as const,
+    retrievedSourceIds: [],
+    citationSourceIds: [],
+    latency: { totalMs: 1, retrievalMs: 1, generationMs: 0 },
+    capacity: { candidateCount: 0, acceptedCount: 0 },
+    tools: { attempted: 0, succeeded: 0, failed: 0 },
+    toolEvents: [],
+    toolTelemetryPresent: false,
+    cancelled: false,
+    unicode: {
+      inputCodePointCount: 1,
+      inputNonAsciiCount: 0,
+      outputCodePointCount: 0,
+      outputNonAsciiCount: 0,
+      outputNfc: true,
+    },
+  },
 };
 function paired(): PairedEvaluation {
   return {
@@ -115,6 +133,45 @@ describe("whole-branch blocker regressions", () => {
     expect(() => compareProviderEvaluations([forged], thresholds)).toThrow(
       "citation quality evidence mismatch",
     );
+  });
+  it("rejects forged latency and cost metrics without raw evidence", () => {
+    const original = paired();
+    const forged = {
+      ...original,
+      local: {
+        ...original.local,
+        latency: { ...original.local.latency, totalMs: 0 },
+        cost: 0,
+      },
+    };
+
+    expect(() => compareProviderEvaluations([forged], thresholds)).toThrow(
+      "trace metric evidence mismatch",
+    );
+  });
+  it("accepts legacy v1 traces without tool evidence when no tool gate is active", () => {
+    const original = paired();
+    const legacyTrace = (value: typeof trace) => {
+      const { evidence, toolEvents, toolTelemetryPresent, ...legacy } = value;
+      return legacy;
+    };
+    const comparison = compareProviderEvaluations(
+      [
+        {
+          ...original,
+          hosted: legacyTrace(original.hosted),
+          local: legacyTrace(original.local),
+        },
+      ],
+      thresholds,
+    );
+    const decision = decidePromotion({
+      comparison,
+      reviewedCases: undefined,
+      productionBaseline: undefined,
+    });
+
+    expect(decision.reasons).not.toContain("provider comparison is stale or forged");
   });
   it("rejects trace mappings that do not match authoritative reviewed cases", () => {
     const original = paired();

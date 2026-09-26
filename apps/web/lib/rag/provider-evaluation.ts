@@ -43,10 +43,27 @@ export interface EvaluationThresholds {
   maxToolFailureRate?: number;
 }
 export interface ProviderTrace {
-  toolEvents: Array<{
+  toolEvents?: Array<{
     type: "started" | "completed" | "failed";
     toolId: string;
   }>;
+  evidence?: {
+    outcome: RagActualOutcome;
+    retrievedSourceIds: string[];
+    citationSourceIds: string[];
+    latency: { totalMs: number; retrievalMs: number; generationMs: number };
+    capacity: ProviderTrace["capacity"];
+    tools: ProviderTrace["tools"];
+    toolEvents: Array<{
+      type: "started" | "completed" | "failed";
+      toolId: string;
+    }>;
+    toolTelemetryPresent: boolean;
+    cancelled: boolean;
+    unicode: ProviderTrace["unicode"];
+    cost?: number;
+    failure?: string;
+  };
   caseId: string;
   provider: EvaluationProvider;
   runId: string;
@@ -602,6 +619,34 @@ async function runProvider(
     toolEvents: metrics.toolEvents,
     tools: metrics.tools,
     toolTelemetryPresent: metrics.toolTelemetryPresent,
+    evidence: {
+      outcome: actualOutcome,
+      retrievedSourceIds: observedSources,
+      citationSourceIds: citationSources,
+      latency: {
+        totalMs: Math.max(0, Math.round((completedAt - startedAt) * 1_000) / 1_000),
+        retrievalMs: Math.max(0, Math.round(metrics.retrievalMs * 1_000) / 1_000),
+        generationMs: Math.max(0, Math.round(metrics.generationMs * 1_000) / 1_000),
+      },
+      capacity: {
+        ...(metrics.candidateCount === undefined ? {} : { candidateCount: metrics.candidateCount }),
+        ...(metrics.acceptedCount === undefined ? {} : { acceptedCount: metrics.acceptedCount }),
+        ...metrics.capacity,
+      },
+      tools: metrics.tools,
+      toolEvents: metrics.toolEvents,
+      toolTelemetryPresent: metrics.toolTelemetryPresent,
+      cancelled: metrics.cancelled === true,
+      unicode: {
+        inputCodePointCount: inputUnicode.codePointCount,
+        inputNonAsciiCount: inputUnicode.nonAsciiCount,
+        outputCodePointCount: outputUnicode.codePointCount,
+        outputNonAsciiCount: outputUnicode.nonAsciiCount,
+        outputNfc: outputUnicode.nfc,
+      },
+      ...(failure === undefined ? {} : { failure }),
+      ...(metrics.cost === undefined ? {} : { cost: metrics.cost }),
+    },
     ...(failure === undefined ? {} : { failure }),
     ...(metrics.cancelled ? { cancelled: true } : {}),
     ...(metrics.cost === undefined ? {} : { cost: metrics.cost }),
@@ -737,6 +782,25 @@ function evaluateGate(aggregateValue: ProviderAggregate, thresholds: EvaluationT
 }
 
 function validateTraceEvidence(trace: ProviderTrace, caseId: string): void {
+  const evidence = trace.evidence;
+  if (evidence !== undefined && (
+    evidence.outcome !== trace.outcome ||
+    JSON.stringify(evidence.retrievedSourceIds) !==
+      JSON.stringify(trace.grounding.retrievedSourceIds) ||
+    JSON.stringify(evidence.citationSourceIds) !==
+      JSON.stringify(trace.citations.sourceIds) ||
+    JSON.stringify(evidence.latency) !== JSON.stringify(trace.latency) ||
+    JSON.stringify(evidence.capacity) !== JSON.stringify(trace.capacity) ||
+    JSON.stringify(evidence.tools) !== JSON.stringify(trace.tools) ||
+    JSON.stringify(evidence.toolEvents) !== JSON.stringify(trace.toolEvents) ||
+    evidence.toolTelemetryPresent !== trace.toolTelemetryPresent ||
+    evidence.cancelled !== (trace.cancelled === true) ||
+    JSON.stringify(evidence.unicode) !== JSON.stringify(trace.unicode) ||
+    evidence.cost !== trace.cost ||
+    evidence.failure !== trace.failure
+  )) {
+    throw new Error(`trace metric evidence mismatch for case ${caseId}`);
+  }
   const expected = trace.grounding.expectedSourceIds;
   const forbidden = trace.grounding.forbiddenSourceIds;
   const retrieved = trace.grounding.retrievedSourceIds;
@@ -779,7 +843,8 @@ function validateTraceEvidence(trace: ProviderTrace, caseId: string): void {
   let attempted = 0;
   let succeeded = 0;
   let failed = 0;
-  for (const event of trace.toolEvents) {
+  const toolEvents = trace.toolEvents ?? [];
+  for (const event of toolEvents) {
     if (event.type === "started") {
       if (started.has(event.toolId)) {
         throw new Error(`duplicate tool start evidence for case ${caseId}`);
@@ -800,7 +865,10 @@ function validateTraceEvidence(trace: ProviderTrace, caseId: string): void {
     throw new Error(`tool count evidence mismatch for case ${caseId}`);
   }
   const expectedTelemetry = started.size > 0 && terminal.size === started.size;
-  if (trace.toolTelemetryPresent !== expectedTelemetry) {
+  if (
+    trace.toolTelemetryPresent !== undefined &&
+    trace.toolTelemetryPresent !== expectedTelemetry
+  ) {
     throw new Error(`tool telemetry evidence mismatch for case ${caseId}`);
   }
 }
@@ -971,6 +1039,65 @@ const providerTraceSchema = z
         queueMs: z.number().finite().nonnegative().optional(),
       })
       .strict(),
+    evidence: z
+      .object({
+        outcome: z.enum([
+          "grounded",
+          "insufficient-evidence",
+          "retrieval-unavailable",
+          "unsupported-answer",
+          "failed",
+        ]),
+        retrievedSourceIds: z.array(z.string().min(1)),
+        citationSourceIds: z.array(z.string().min(1)),
+        latency: z
+          .object({
+            totalMs: z.number().finite().nonnegative(),
+            retrievalMs: z.number().finite().nonnegative(),
+            generationMs: z.number().finite().nonnegative(),
+          })
+          .strict(),
+        capacity: z
+          .object({
+            candidateCount: z.number().finite().nonnegative().optional(),
+            acceptedCount: z.number().finite().nonnegative().optional(),
+            promptTokens: z.number().finite().nonnegative().optional(),
+            completionTokens: z.number().finite().nonnegative().optional(),
+            queueMs: z.number().finite().nonnegative().optional(),
+          })
+          .strict(),
+        tools: z
+          .object({
+            attempted: z.number().int().nonnegative(),
+            succeeded: z.number().int().nonnegative(),
+            failed: z.number().int().nonnegative(),
+          })
+          .strict(),
+        toolEvents: z
+          .array(
+            z
+              .object({
+                type: z.enum(["started", "completed", "failed"]),
+                toolId: z.string().min(1),
+              })
+              .strict(),
+          ),
+        toolTelemetryPresent: z.boolean(),
+        cancelled: z.boolean(),
+        unicode: z
+          .object({
+            inputCodePointCount: z.number().int().nonnegative(),
+            inputNonAsciiCount: z.number().int().nonnegative(),
+            outputCodePointCount: z.number().int().nonnegative(),
+            outputNonAsciiCount: z.number().int().nonnegative(),
+            outputNfc: z.boolean(),
+          })
+          .strict(),
+        cost: z.number().finite().nonnegative().optional(),
+        failure: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     toolEvents: z
       .array(
         z
@@ -979,7 +1106,7 @@ const providerTraceSchema = z
             toolId: z.string().min(1),
           })
           .strict(),
-      ),
+      ).optional(),
     tools: z
       .object({
         attempted: z.number().int().nonnegative(),
@@ -987,7 +1114,7 @@ const providerTraceSchema = z
         failed: z.number().int().nonnegative(),
       })
       .strict(),
-    toolTelemetryPresent: z.boolean(),
+    toolTelemetryPresent: z.boolean().optional(),
     failure: z.string().min(1).optional(),
     cancelled: z.boolean().optional(),
     cost: z.number().finite().nonnegative().optional(),
