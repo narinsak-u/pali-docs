@@ -43,7 +43,10 @@ export interface EvaluationThresholds {
   maxToolFailureRate?: number;
 }
 export interface ProviderTrace {
-  schemaVersion: "v1";
+  toolEvents: Array<{
+    type: "started" | "completed" | "failed";
+    toolId: string;
+  }>;
   caseId: string;
   provider: EvaluationProvider;
   runId: string;
@@ -181,9 +184,8 @@ interface RunMetrics {
   answer?: string;
   failure?: string;
   cancelled?: boolean;
-  cost?: number;
-  capacity: ProviderTrace["capacity"];
   tools: ProviderTrace["tools"];
+  toolEvents: ProviderTrace["toolEvents"];
   toolTelemetryPresent: boolean;
   toolTelemetryMalformed: boolean;
 }
@@ -365,6 +367,7 @@ function extractRunMetrics(): {
     generationMs: 0,
     capacity: {},
     tools: { attempted: 0, succeeded: 0, failed: 0 },
+    toolEvents: [],
     toolTelemetryPresent: false,
     toolTelemetryMalformed: false,
   };
@@ -448,6 +451,7 @@ function extractRunMetrics(): {
               metrics.toolTelemetryPresent = false;
               break;
             }
+            metrics.toolEvents.push({ type: "started", toolId });
             startedTools.add(toolId);
             metrics.tools.attempted += 1;
             break;
@@ -457,6 +461,10 @@ function extractRunMetrics(): {
             metrics.toolTelemetryPresent = false;
             break;
           }
+          metrics.toolEvents.push({
+            type: event.type === "tool.completed" ? "completed" : "failed",
+            toolId,
+          });
           terminalTools.add(toolId);
           if (event.type === "tool.completed") metrics.tools.succeeded += 1;
           else metrics.tools.failed += 1;
@@ -591,6 +599,7 @@ async function runProvider(
       ...(metrics.acceptedCount === undefined ? {} : { acceptedCount: metrics.acceptedCount }),
       ...metrics.capacity,
     },
+    toolEvents: metrics.toolEvents,
     tools: metrics.tools,
     toolTelemetryPresent: metrics.toolTelemetryPresent,
     ...(failure === undefined ? {} : { failure }),
@@ -727,6 +736,75 @@ function evaluateGate(aggregateValue: ProviderAggregate, thresholds: EvaluationT
   return { pass: violations.length === 0, violations, aggregate: aggregateValue };
 }
 
+function validateTraceEvidence(trace: ProviderTrace, caseId: string): void {
+  const expected = trace.grounding.expectedSourceIds;
+  const forbidden = trace.grounding.forbiddenSourceIds;
+  const retrieved = trace.grounding.retrievedSourceIds;
+  const citations = trace.citations.sourceIds;
+  if (unique(retrieved).length !== retrieved.length) {
+    throw new Error(`duplicate retrieved source evidence for case ${caseId}`);
+  }
+  if (unique(citations).length !== citations.length) {
+    throw new Error(`duplicate citation source evidence for case ${caseId}`);
+  }
+  const expectedRecall = sourceRecall(expected, retrieved);
+  if (trace.grounding.sourceRecall !== expectedRecall) {
+    throw new Error(`grounding recall evidence mismatch for case ${caseId}`);
+  }
+  const expectedPrecision = citationPrecision(expected, citations);
+  const expectedCompleteness = citationCompleteness(expected, citations);
+  if (
+    trace.citations.precision !== expectedPrecision ||
+    trace.citations.completeness !== expectedCompleteness ||
+    trace.quality.grounding.sourceRecall !== expectedRecall ||
+    trace.quality.citations.precision !== expectedPrecision ||
+    trace.quality.citations.completeness !== expectedCompleteness
+  ) {
+    throw new Error(`citation quality evidence mismatch for case ${caseId}`);
+  }
+  const expectedViolations = unique([
+    ...citations
+      .filter((source) => forbidden.includes(source))
+      .map((source) => `forbidden:${source}`),
+    ...citations
+      .filter((source) => !expected.includes(source))
+      .map((source) => `unknown:${source}`),
+  ]);
+  if (JSON.stringify(trace.citations.violations) !== JSON.stringify(expectedViolations)) {
+    throw new Error(`citation violation evidence mismatch for case ${caseId}`);
+  }
+
+  const started = new Set<string>();
+  const terminal = new Set<string>();
+  let attempted = 0;
+  let succeeded = 0;
+  let failed = 0;
+  for (const event of trace.toolEvents) {
+    if (event.type === "started") {
+      if (started.has(event.toolId)) {
+        throw new Error(`duplicate tool start evidence for case ${caseId}`);
+      }
+      started.add(event.toolId);
+      attempted += 1;
+      continue;
+    }
+    if (!started.has(event.toolId) || terminal.has(event.toolId)) {
+      throw new Error(`invalid tool lifecycle evidence for case ${caseId}`);
+    }
+    terminal.add(event.toolId);
+    if (event.type === "completed") succeeded += 1;
+    else failed += 1;
+  }
+  const expectedTools = { attempted, succeeded, failed };
+  if (JSON.stringify(trace.tools) !== JSON.stringify(expectedTools)) {
+    throw new Error(`tool count evidence mismatch for case ${caseId}`);
+  }
+  const expectedTelemetry = started.size > 0 && terminal.size === started.size;
+  if (trace.toolTelemetryPresent !== expectedTelemetry) {
+    throw new Error(`tool telemetry evidence mismatch for case ${caseId}`);
+  }
+}
+
 export function compareProviderEvaluations(
   paired: readonly PairedEvaluation[],
   thresholds: EvaluationThresholds,
@@ -774,6 +852,7 @@ export function compareProviderEvaluations(
       if (expected.some((sourceId) => forbidden.includes(sourceId))) {
         throw new Error(`overlapping source mapping for case ${item.caseId}`);
       }
+      validateTraceEvidence(trace, item.caseId);
     }
   }
   const aggregates = {
@@ -892,6 +971,15 @@ const providerTraceSchema = z
         queueMs: z.number().finite().nonnegative().optional(),
       })
       .strict(),
+    toolEvents: z
+      .array(
+        z
+          .object({
+            type: z.enum(["started", "completed", "failed"]),
+            toolId: z.string().min(1),
+          })
+          .strict(),
+      ),
     tools: z
       .object({
         attempted: z.number().int().nonnegative(),
@@ -1098,6 +1186,16 @@ export function decidePromotion(options: {
       const trace = item[provider];
       if (trace.provider !== provider) {
         reasons.push(`${provider} trace provider lineage mismatch for case ${item.caseId}`);
+      }
+      const expectedScope = normalizeAccessScope(evaluationCase.accessScope);
+      if (
+        JSON.stringify(canonicalEvidence(trace.accessScope ?? {})) !==
+        JSON.stringify(canonicalEvidence(expectedScope))
+      ) {
+        reasons.push(`${provider} trace AccessScope projection mismatch for case ${item.caseId}`);
+      }
+      if (trace.accessScopeDigest !== scopeDigest(expectedScope)) {
+        reasons.push(`${provider} trace AccessScope digest mismatch for case ${item.caseId}`);
       }
       if (
         trace.corpusRevision !== cases.corpusRevision ||

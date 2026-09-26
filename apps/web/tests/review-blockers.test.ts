@@ -57,8 +57,9 @@ const trace = {
   },
   latency: { totalMs: 1, retrievalMs: 1, generationMs: 0 },
   capacity: { candidateCount: 0, acceptedCount: 0 },
+  toolEvents: [],
   tools: { attempted: 0, succeeded: 0, failed: 0 },
-  toolTelemetryPresent: true,
+  toolTelemetryPresent: false,
 };
 function paired(): PairedEvaluation {
   return {
@@ -97,6 +98,24 @@ describe("whole-branch blocker regressions", () => {
   });
 });
 
+  it("rejects forged derived metrics without verifiable source evidence", () => {
+    const original = paired();
+    const forged = {
+      ...original,
+      local: {
+        ...original.local,
+        citations: { ...original.local.citations, precision: 0 },
+        quality: {
+          ...original.local.quality,
+          citations: { ...original.local.quality.citations, precision: 0 },
+        },
+      },
+    };
+
+    expect(() => compareProviderEvaluations([forged], thresholds)).toThrow(
+      "citation quality evidence mismatch",
+    );
+  });
   it("rejects trace mappings that do not match authoritative reviewed cases", () => {
     const original = paired();
     const forgedPaired: PairedEvaluation[] = [
@@ -104,9 +123,20 @@ describe("whole-branch blocker regressions", () => {
         ...original,
         local: {
           ...original.local,
+          accessScope: { tenant: "forged-tenant" },
           grounding: {
             ...original.local.grounding,
             expectedSourceIds: ["forged-source"],
+            sourceRecall: 0,
+          },
+          quality: {
+            ...original.local.quality,
+            grounding: { sourceRecall: 0 },
+            citations: { precision: 1, completeness: 0 },
+          },
+          citations: {
+            ...original.local.citations,
+            completeness: 0,
           },
         },
       },
@@ -145,6 +175,9 @@ describe("whole-branch blocker regressions", () => {
     expect(decision.promote).toBe(false);
     expect(decision.reasons).toContain(
       "local trace source lineage mismatch for case case-1",
+    );
+    expect(decision.reasons).toContain(
+      "local trace AccessScope projection mismatch for case case-1",
     );
   });
 it("rejects rollback at the exact expiry boundary", () => {
