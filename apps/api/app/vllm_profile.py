@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
@@ -31,7 +32,7 @@ QWEN3_VLLM_PROFILE = VllmProfile(
     tokenizer_id="Qwen/Qwen3-8B",
     tokenizer_revision="b968826d9c46dd6066d109eabc6255188de91218",
     reasoning_parser="qwen3",
-    chat_template_kwargs={"enable_thinking": False},
+    chat_template_kwargs=MappingProxyType({"enable_thinking": False}),
     tensor_parallel_size=1,
 )
 
