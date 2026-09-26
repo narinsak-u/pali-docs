@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type {
   AgentEvent,
@@ -166,6 +166,8 @@ export interface ProviderComparison {
   paired: PairedEvaluation[];
   aggregates: Record<EvaluationProvider, ProviderAggregate>;
   gates: Record<EvaluationProvider, ProviderGateResult>;
+  /** HMAC over the canonical comparison payload, produced only by the evaluation process. */
+  attestation?: string;
 }
 
 export interface ReviewedCasesArtifact {
@@ -954,7 +956,7 @@ export function compareProviderEvaluations(
       gates[provider].violations.push(`${provider} cancellation evidence is incomplete`);
     }
   }
-  return {
+  const comparison: ProviderComparison = {
     schemaVersion: "v1",
     caseCount: paired.length,
     thresholds: normalizedThresholds,
@@ -962,6 +964,8 @@ export function compareProviderEvaluations(
     aggregates,
     gates,
   };
+  const attestation = attestComparison(comparison);
+  return attestation === undefined ? comparison : { ...comparison, attestation };
 }
 
 const thresholdSchema = z
@@ -1280,9 +1284,36 @@ function canonicalEvidence(value: unknown): unknown {
   return value;
 }
 
+function comparisonPayload(value: ProviderComparison): string {
+  const { attestation: _attestation, ...withoutAttestation } = value;
+  return JSON.stringify(canonicalEvidence(withoutAttestation));
+}
+
+function attestationSecret(): string | undefined {
+  const secret = process.env.RAG_PROMOTION_ATTESTATION_SECRET?.trim();
+  return secret || undefined;
+}
+
+function attestComparison(value: ProviderComparison): string | undefined {
+  const secret = attestationSecret();
+  if (secret === undefined) return undefined;
+  return createHmac("sha256", secret).update(comparisonPayload(value)).digest("hex");
+}
+
+function validAttestation(value: ProviderComparison, candidate: unknown): boolean {
+  const expected = attestComparison(value);
+  if (expected === undefined || typeof candidate !== "string") return false;
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const candidateBuffer = Buffer.from(candidate, "utf8");
+  return (
+    expectedBuffer.length === candidateBuffer.length &&
+    timingSafeEqual(expectedBuffer, candidateBuffer)
+  );
+}
+
 function verifiedComparison(value: unknown): ProviderComparison | undefined {
   if (value === null || typeof value !== "object") return undefined;
-  const candidate = value as { paired?: unknown; thresholds?: unknown };
+  const candidate = value as { paired?: unknown; thresholds?: unknown; attestation?: unknown };
   try {
     const paired = pairedEvaluationSchema
       .array()
@@ -1290,6 +1321,7 @@ function verifiedComparison(value: unknown): ProviderComparison | undefined {
       .parse(candidate.paired);
     const thresholds = thresholdSchema.parse(candidate.thresholds);
     const recomputed = compareProviderEvaluations(paired, thresholds);
+    if (!validAttestation(recomputed, candidate.attestation)) return undefined;
     return JSON.stringify(canonicalEvidence(recomputed)) ===
       JSON.stringify(canonicalEvidence(value))
       ? recomputed
@@ -1298,6 +1330,8 @@ function verifiedComparison(value: unknown): ProviderComparison | undefined {
     return undefined;
   }
 }
+
+// The attestation is intentionally checked before accepting any persisted comparison.
 
 export function decidePromotion(options: {
   comparison: unknown;

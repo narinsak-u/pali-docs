@@ -1,4 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+beforeAll(() => {
+  vi.stubEnv("RAG_PROMOTION_ATTESTATION_SECRET", "review-blockers-test-secret");
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 import {
   compareProviderEvaluations,
   decidePromotion,
@@ -183,6 +189,47 @@ describe("whole-branch blocker regressions", () => {
       productionBaseline: undefined,
     });
     expect(decision.reasons).not.toContain("provider comparison is stale or forged");
+  });
+  it("rejects a caller-forged scalar and matching raw evidence with an old attestation", () => {
+    const comparison = compareProviderEvaluations([paired()], thresholds);
+    const forgedTrace = comparison.paired[0].local;
+    const forged = {
+      ...comparison,
+      paired: [
+        {
+          ...comparison.paired[0],
+          local: {
+            ...forgedTrace,
+            latency: { ...forgedTrace.latency, totalMs: 0 },
+            evidence: forgedTrace.evidence
+              ? { ...forgedTrace.evidence, latency: { ...forgedTrace.evidence.latency, totalMs: 0 } }
+              : undefined,
+          },
+        },
+      ],
+    };
+    expect(
+      decidePromotion({
+        comparison: forged,
+        reviewedCases: undefined,
+        productionBaseline: undefined,
+      }),
+    ).toEqual({ promote: false, reasons: ["provider comparison is stale or forged"] });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["invalid", "not-a-valid-attestation"],
+  ])("rejects comparisons with %s server attestation", (_label, attestation) => {
+    const comparison = compareProviderEvaluations([paired()], thresholds);
+    const candidate = { ...comparison, attestation };
+    expect(
+      decidePromotion({
+        comparison: candidate,
+        reviewedCases: undefined,
+        productionBaseline: undefined,
+      }),
+    ).toEqual({ promote: false, reasons: ["provider comparison is stale or forged"] });
   });
   it("rejects trace mappings that do not match authoritative reviewed cases", () => {
     const original = paired();

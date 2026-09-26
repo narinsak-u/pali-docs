@@ -10,7 +10,15 @@ import {
   type EvaluationCase,
   type EvaluationThresholds,
 } from "@/lib/rag/provider-evaluation";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+beforeAll(() => {
+  vi.stubEnv("RAG_PROMOTION_ATTESTATION_SECRET", "provider-evaluation-test-secret");
+});
+
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 const evaluationCase: EvaluationCase = {
   id: "unicode-grounded",
