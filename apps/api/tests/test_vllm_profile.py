@@ -14,8 +14,9 @@ def test_qwen3_profile_is_pinned_for_private_non_thinking_single_gpu() -> None:
     assert QWEN3_VLLM_PROFILE.model_revision == "b968826d9c46dd6066d109eabc6255188de91218"
     assert QWEN3_VLLM_PROFILE.tokenizer_id == "Qwen/Qwen3-8B"
     assert QWEN3_VLLM_PROFILE.tokenizer_revision == "b968826d9c46dd6066d109eabc6255188de91218"
+    assert QWEN3_VLLM_PROFILE.image_tag == "v0.9.0"
     assert QWEN3_VLLM_PROFILE.image == (
-        "vllm/vllm-openai@sha256:6cf9808ca8810fc6c3fd0451c2e7784fb224590d81f7db338e7eaf3c02a33d33"
+        "vllm/vllm-openai@sha256:df2c55e5107afea09ea1a50f9dd96c99ebf97a795334c4d08f691f3d79b2ab12"
     )
     assert QWEN3_VLLM_PROFILE.reasoning_parser == "qwen3"
     assert QWEN3_VLLM_PROFILE.chat_template_kwargs == {"enable_thinking": False}
@@ -85,6 +86,35 @@ def test_readiness_checks_health_then_exact_model_identity(
         == "Qwen/Qwen3-8B"
     )
     assert len(seen) == 2
+    assert seen[0].full_url == "http://vllm.internal:8000/health"
+    assert seen[1].full_url == "http://vllm.internal:8000/v1/models"
+
+def test_readiness_cli_rejects_non_pinned_model_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from pathlib import Path
+    from runpy import run_path
+
+    main = run_path(
+        str(Path(__file__).parents[1] / "scripts" / "check_vllm.py")
+    )["main"]
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_vllm.py",
+            "--base-url",
+            "http://vllm.internal:8000/v1",
+            "--api-key",
+            "vllm-key",
+            "--model",
+            "other-model",
+        ],
+    )
+
+    assert main() == 2
 
 
 @pytest.mark.parametrize(

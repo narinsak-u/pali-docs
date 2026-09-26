@@ -87,7 +87,52 @@ The execution host reports `Darwin 25.6.0 arm64` and has no `nvidia-smi`; there 
 
 ## Concerns and boundaries
 
-- vLLM v0.8.5 and its immutable digest are selected because the release includes the Qwen3 parser. The model and tokenizer revisions are pinned to the same Hugging Face commit to prevent chat-template drift.
+- vLLM v0.9.0 and its immutable digest are selected because the official Qwen deployment guidance identifies this release as the first compatible Qwen3 reasoning-parser release for `enable_thinking=False`. The model and tokenizer revisions are pinned to the same Hugging Face commit to prevent chat-template drift.
 - The profile intentionally does not enable auto tool choice, tool parsers, structured generation, grounded full-turn routing, observability, or rollback policy; those remain later task boundaries.
 - The private compose binding is loopback-only for a same-host API. A split-host deployment needs an equivalent private network/firewall rule and must continue to keep the endpoint out of browser-facing configuration.
 - Existing dependency deprecation warnings remain; no formatter, linter, project-wide suite, or GPU smoke was run.
+
+## Review fixes and compatibility evidence
+
+The review identified a path-joining defect and an unsafe CLI model override. Both were corrected test-first:
+
+```text
+$ apps/api/.venv/bin/pytest -q apps/api/tests/test_vllm_profile.py::test_readiness_checks_health_then_exact_model_identity
+FAILED ... assert 'http://vllm.internal:8000health' == 'http://vllm.internal:8000/health'
+```
+
+After changing the `/v1` base URL join to insert `/health`, the focused test passed:
+
+```text
+$ apps/api/.venv/bin/pytest -q apps/api/tests/test_vllm_profile.py::test_readiness_checks_health_then_exact_model_identity
+.                                                                        [100%]
+1 passed, 1 warning
+```
+
+The CLI override test initially observed an arbitrary model reaching the network check and returning exit 1. The CLI now rejects any `--model` value other than the immutable `Qwen/Qwen3-8B` profile ID before making a request:
+
+```text
+$ apps/api/.venv/bin/pytest -q apps/api/tests/test_vllm_profile.py::test_readiness_cli_rejects_non_pinned_model_override
+FAILED ... assert 1 == 2
+...
+.                                                                        [100%]
+1 passed, 1 warning
+```
+
+Compatibility was verified against primary documentation rather than guessed:
+
+- The [official Qwen vLLM deployment guide](https://qwen.readthedocs.io/en/latest/deployment/vllm.html) documents `--reasoning-parser qwen3` since vLLM 0.9.0 and explicitly says `enable_thinking=False` is incompatible with the parser in vLLM 0.8.5 but resolved in vLLM 0.9.0.
+- The [vLLM 0.9.0 Qwen3 reasoning parser reference](https://docs.vllm.ai/en/v0.9.0/api/vllm/reasoning/qwen3_reasoning_parser.html) is the parser reference for the selected image.
+- The image was changed from v0.8.5 to the immutable v0.9.0 manifest digest `sha256:df2c55e5107afea09ea1a50f9dd96c99ebf97a795334c4d08f691f3d79b2ab12`; the profile and compose tests pin the same digest.
+- The prerequisites now explicitly require x86_64/amd64 Linux because the pinned CUDA image is not an Apple Silicon image.
+
+Final focused verification after all review fixes:
+
+```text
+$ apps/api/.venv/bin/pytest -q apps/api/tests/test_vllm_profile.py apps/api/tests/test_provider_contract.py
+.........................                                                [100%]
+pytest: 25 passed, 29 warnings in 0.75s
+
+$ VLLM_API_KEY=smoke docker compose -f deploy/vllm/docker-compose.yml config --quiet
+# exit 0, no output
+```

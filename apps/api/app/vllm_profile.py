@@ -24,9 +24,9 @@ class VllmProfile:
 QWEN3_VLLM_PROFILE = VllmProfile(
     image=(
         "vllm/vllm-openai@sha256:"
-        "6cf9808ca8810fc6c3fd0451c2e7784fb224590d81f7db338e7eaf3c02a33d33"
+        "df2c55e5107afea09ea1a50f9dd96c99ebf97a795334c4d08f691f3d79b2ab12"
     ),
-    image_tag="v0.8.5",
+    image_tag="v0.9.0",
     model_id="Qwen/Qwen3-8B",
     model_revision="b968826d9c46dd6066d109eabc6255188de91218",
     tokenizer_id="Qwen/Qwen3-8B",
@@ -122,7 +122,7 @@ def check_vllm_readiness(
         raise VllmReadinessError("vLLM readiness timeout must be positive")
 
     if normalized_url.endswith("/v1"):
-        health_url = normalized_url[:-3] + "health"
+        health_url = normalized_url[:-3] + "/health"
         models_url = f"{normalized_url}/models"
     else:
         health_url = f"{normalized_url}/health"

@@ -31,11 +31,17 @@ def main() -> int:
         help="Expected served model ID.",
     )
     args = parser.parse_args()
+    if args.model != QWEN3_VLLM_PROFILE.model_id:
+        print(
+            f"vLLM model override must remain {QWEN3_VLLM_PROFILE.model_id}",
+            file=sys.stderr,
+        )
+        return 2
     try:
         model = check_vllm_readiness(
             args.base_url,
             api_key=args.api_key,
-            expected_model=args.model,
+            expected_model=QWEN3_VLLM_PROFILE.model_id,
         )
     except VllmReadinessError as error:
         print(f"vLLM not ready: {error}", file=sys.stderr)

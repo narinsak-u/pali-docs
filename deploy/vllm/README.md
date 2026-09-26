@@ -6,7 +6,7 @@ This profile serves the pinned `Qwen/Qwen3-8B` model through vLLM's OpenAI-compa
 
 The profile is intentionally limited to one Linux NVIDIA host:
 
-- 64-bit Linux with Docker Engine and the Docker Compose plugin.
+- x86_64/amd64 Linux with Docker Engine and the Docker Compose plugin. The pinned vLLM image is not an Apple Silicon image.
 - One NVIDIA GPU with a current driver and enough VRAM for the BF16 8B weights plus the configured KV cache. A 24 GB card is the practical pilot floor; the exact capacity depends on context length and concurrency.
 - NVIDIA Container Toolkit installed and configured for Docker (`docker run --gpus all ...` must work).
 - Outbound access to Hugging Face for the first model download, or a pre-populated Hugging Face cache. Set `HF_TOKEN` only when the serving host needs authenticated access.
@@ -17,7 +17,7 @@ This host must not be an Apple Silicon or CPU-only deployment target. The reposi
 
 `docker-compose.yml` pins all compatibility-sensitive values:
 
-- vLLM image: `vllm/vllm-openai:v0.8.5` by immutable image digest.
+- vLLM image: `vllm/vllm-openai:v0.9.0` by immutable image digest.
 - Model and served ID: `Qwen/Qwen3-8B` at Hugging Face revision `b968826d9c46dd6066d109eabc6255188de91218`.
 - Tokenizer: the same repository and revision as the model.
 - One tensor-parallel GPU (`--tensor-parallel-size 1`).
@@ -25,6 +25,8 @@ This host must not be an Apple Silicon or CPU-only deployment target. The reposi
 - Non-thinking by default (`enable_thinking: false`). The FastAPI local provider also sends this request option through its existing `ChatOpenAI` seam.
 
 Do not replace these with `latest`, an unpinned Hugging Face branch, a different tokenizer, or a different parser without a new compatibility check. Tool parsing and structured output are intentionally not enabled by this pilot.
+
+The compatibility choice follows the [official Qwen vLLM deployment guide](https://qwen.readthedocs.io/en/latest/deployment/vllm.html): it documents `--reasoning-parser qwen3` since vLLM 0.9.0 and states that `enable_thinking=False` is incompatible with the parser in vLLM 0.8.5 but resolved in 0.9.0. The [vLLM 0.9.0 reasoning parser documentation](https://docs.vllm.ai/en/v0.9.0/api/vllm/reasoning/qwen3_reasoning_parser.html) is the parser reference for this pin.
 
 ## Start the private server
 
