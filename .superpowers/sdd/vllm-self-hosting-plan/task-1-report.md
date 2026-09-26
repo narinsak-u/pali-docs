@@ -115,3 +115,38 @@ Output:
 
 - This task validates provider construction and configuration without a real Linux/NVIDIA vLLM server. Deployment readiness and model compatibility remain Task 2 concerns.
 - The API focused runs report existing dependency deprecation warnings from LangGraph and pytest-asyncio.
+
+## Review response: route realism correction
+
+The second review identified that the earlier invalid-local route test replaced the route's runner factory and therefore asserted a construction-time `503` path that production does not use. The test was corrected without changing production error behavior:
+
+- Local and hosted route tests now use the real `create_langgraph_agent_turn_runner` factory.
+- Tests monkeypatch only `LangGraphAgentRunner.run_turn` to avoid graph/retrieval/network work, while explicitly invoking the real runner's `_stage_instance()._chat()` seam.
+- The invalid local limit case now asserts the production SSE contract: `run.started` followed by `run.failed` with `runner_error`, rather than an HTTP 503.
+- The local and hosted cases assert the existing `text/event-stream` response and terminal event behavior.
+
+Corrected focused test command:
+
+```text
+cd apps/api && .venv/bin/pytest -q tests/test_provider_contract.py
+```
+
+Output:
+
+```text
+15 passed, 29 warnings
+```
+
+Focused regression command:
+
+```text
+cd apps/api && .venv/bin/pytest -q tests/test_provider_contract.py tests/test_question.py tests/test_retriever.py
+```
+
+Output:
+
+```text
+61 passed, 263 warnings
+```
+
+No production source changes were required for this review correction; the existing runner failure/event behavior is now tested faithfully.

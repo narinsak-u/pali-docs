@@ -5,12 +5,11 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
 from pydantic import ValidationError
 from starlette.requests import Request
 
 from app import question as question_module
-from app.agent.runner import LangChainModelStages
+from app.agent.runner import LangChainModelStages, LangGraphAgentRunner
 from app.agent.types import AgentEvent
 from app.config import Settings
 from app.question import QuestionRequest
@@ -120,26 +119,53 @@ def _route_request() -> Request:
     )
 
 
-class _CompletedRunner:
+def _patch_runner(
+    monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]
+) -> None:
     async def run_turn(
-        self,
+        self: LangGraphAgentRunner,
         turn: object,
         event_sink: object,
         _cancellation: object,
     ) -> None:
         emit = event_sink
         timestamp = datetime.now(timezone.utc)
-        for sequence, event_type in enumerate(("run.started", "run.completed")):
+        await emit(
+            AgentEvent(
+                run_id=turn.run_id,
+                event_id=str(uuid4()),
+                sequence=0,
+                event_type="run.started",
+                timestamp=timestamp,
+                payload={"runId": turn.run_id},
+            )
+        )
+        try:
+            captured["model"] = self._stage_instance()._chat()
+        except Exception:
             await emit(
                 AgentEvent(
                     run_id=turn.run_id,
                     event_id=str(uuid4()),
-                    sequence=sequence,
-                    event_type=event_type,
+                    sequence=1,
+                    event_type="run.failed",
                     timestamp=timestamp,
-                    payload={"runId": turn.run_id},
+                    payload={"runId": turn.run_id, "code": "runner_error"},
                 )
             )
+            return
+        await emit(
+            AgentEvent(
+                run_id=turn.run_id,
+                event_id=str(uuid4()),
+                sequence=1,
+                event_type="run.completed",
+                timestamp=timestamp,
+                payload={"runId": turn.run_id},
+            )
+        )
+
+    monkeypatch.setattr(LangGraphAgentRunner, "run_turn", run_turn)
 
 
 @pytest.mark.asyncio
@@ -149,13 +175,9 @@ async def test_question_route_streams_with_local_provider(
     settings = _settings()
     captured: dict[str, object] = {}
 
-    def create_runner(**kwargs: object) -> _CompletedRunner:
-        captured["model"] = LangChainModelStages(settings=kwargs["settings"])._chat()
-        return _CompletedRunner()
-
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
     monkeypatch.setattr(question_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(question_module, "create_langgraph_agent_turn_runner", create_runner)
+    _patch_runner(monkeypatch, captured)
 
     response = await question_module.question(
         QuestionRequest.model_validate(
@@ -186,13 +208,9 @@ async def test_question_route_keeps_hosted_provider_as_rollback(
     )
     captured: dict[str, object] = {}
 
-    def create_runner(**kwargs: object) -> _CompletedRunner:
-        captured["model"] = LangChainModelStages(settings=kwargs["settings"])._chat()
-        return _CompletedRunner()
-
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
     monkeypatch.setattr(question_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(question_module, "create_langgraph_agent_turn_runner", create_runner)
+    _patch_runner(monkeypatch, captured)
 
     response = await question_module.question(
         QuestionRequest.model_validate(
@@ -209,7 +227,7 @@ async def test_question_route_keeps_hosted_provider_as_rollback(
 
 
 @pytest.mark.asyncio
-async def test_question_route_maps_invalid_local_limits_to_service_unavailable(
+async def test_question_route_streams_runner_error_for_invalid_local_limits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = SimpleNamespace(
@@ -221,25 +239,20 @@ async def test_question_route_maps_invalid_local_limits_to_service_unavailable(
         LOCAL_LLM_TIMEOUT_SECONDS=301,
         LOCAL_LLM_MAX_OUTPUT_TOKENS=768,
     )
+    captured: dict[str, object] = {}
 
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
     monkeypatch.setattr(question_module, "get_settings", lambda: settings)
-    monkeypatch.setattr(
-        question_module,
-        "create_langgraph_agent_turn_runner",
-        lambda **kwargs: LangChainModelStages(settings=kwargs["settings"])._chat(),
+    _patch_runner(monkeypatch, captured)
+
+    response = await question_module.question(
+        QuestionRequest.model_validate(
+            {"runId": "invalid-local", "messages": [{"role": "user", "content": "Hi"}]}
+        ),
+        _route_request(),
     )
+    body = b"".join([chunk async for chunk in response.body_iterator])
 
-    with pytest.raises(HTTPException) as error:
-        await question_module.question(
-            QuestionRequest.model_validate(
-                {"runId": "invalid-local", "messages": [{"role": "user", "content": "Hi"}]}
-            ),
-            _route_request(),
-        )
-
-    assert error.value.status_code == 503
-    assert error.value.detail == {
-        "error": "service_unavailable",
-        "message": "Question service unavailable",
-    }
+    assert response.media_type == "text/event-stream"
+    assert b'"eventType":"run.failed"' in body
+    assert b'"code":"runner_error"' in body
