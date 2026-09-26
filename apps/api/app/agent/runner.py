@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -103,17 +104,27 @@ class LangChainModelStages:
             base_url = settings.LOCAL_LLM_BASE_URL
             timeout = settings.LOCAL_LLM_TIMEOUT_SECONDS
             max_tokens = settings.LOCAL_LLM_MAX_OUTPUT_TOKENS
+            endpoint_valid = False
+            if isinstance(base_url, str):
+                try:
+                    endpoint = urlsplit(base_url)
+                    endpoint_valid = (
+                        endpoint.scheme in {"http", "https"}
+                        and bool(endpoint.hostname)
+                        and (endpoint.port is None or 1 <= endpoint.port <= 65535)
+                    )
+                except ValueError:
+                    endpoint_valid = False
             if (
-                not isinstance(base_url, str)
-                or not base_url.startswith(("http://", "https://"))
+                not endpoint_valid
                 or not api_key
                 or not model_name
                 or not isinstance(timeout, (int, float))
                 or isinstance(timeout, bool)
-                or timeout <= 0
+                or not 0 < timeout <= 300
                 or not isinstance(max_tokens, int)
                 or isinstance(max_tokens, bool)
-                or max_tokens <= 0
+                or not 0 < max_tokens <= 32768
             ):
                 raise ValueError("Invalid local provider configuration")
         else:

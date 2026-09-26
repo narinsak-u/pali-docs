@@ -24,7 +24,7 @@ Command:
 cd apps/api && .venv/bin/pytest -q tests/test_provider_contract.py
 ```
 
-Output:
+Output before the initial implementation:
 
 ```text
 2 failed, 6 passed
@@ -51,7 +51,7 @@ The warnings are dependency deprecation warnings from LangGraph and pytest-async
 
 ## Focused regression tests
 
-Command:
+Initial implementation command:
 
 ```text
 cd apps/api && .venv/bin/pytest -q tests/test_provider_contract.py tests/test_question.py tests/test_retriever.py
@@ -63,9 +63,55 @@ Output:
 54 passed, 236 warnings
 ```
 
+Review-fix command:
+
+```text
+cd apps/api && .venv/bin/pytest -q tests/test_provider_contract.py tests/test_question.py tests/test_retriever.py
+```
+
+Output:
+
+```text
+61 passed, 263 warnings
+```
+
 All warnings are existing dependency deprecations; no test failures or application errors occurred.
+
+## Review response and follow-up TDD evidence
+
+Review findings were addressed as follows:
+
+1. Local endpoint validation now reads `urlsplit().hostname` and `.port`, catches malformed ports, rejects missing hostnames, and accepts only valid HTTP(S) endpoint forms. This rejects `http://host:bad/v1` and `http://:8000/v1` at `Settings` construction.
+2. The existing model seam independently enforces the same timeout and output-token upper bounds, so a `Settings | Any` caller cannot bypass the safety limits. It also applies strict endpoint validation at construction.
+3. Added observable `/v1/question` coverage that exercises local streaming, hosted rollback streaming, and invalid-local-limit mapping to the existing `503 service_unavailable` response. The tests assert the SSE response/event contract and model selection through the route's existing runner seam.
+
+Review RED command:
+
+```text
+cd apps/api && .venv/bin/pytest -q tests/test_provider_contract.py
+```
+
+Output before the review fixes (after adding the review tests):
+
+```text
+5 failed, 10 passed
+```
+
+The failures were the two malformed endpoint cases, two model-seam upper-bound cases, and invalid-local route error mapping. An initial test-only `NameError` from a missing `QuestionRequest` import was corrected before this RED evidence was captured.
+
+Review GREEN command:
+
+```text
+cd apps/api && .venv/bin/pytest -q tests/test_provider_contract.py
+```
+
+Output:
+
+```text
+15 passed, 29 warnings
+```
 
 ## Concerns
 
 - This task validates provider construction and configuration without a real Linux/NVIDIA vLLM server. Deployment readiness and model compatibility remain Task 2 concerns.
-- The API focused run reports existing dependency deprecation warnings from LangGraph and pytest-asyncio.
+- The API focused runs report existing dependency deprecation warnings from LangGraph and pytest-asyncio.

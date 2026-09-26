@@ -119,8 +119,19 @@ class Settings(BaseSettings):
                     "LOCAL_LLM_BASE_URL, LOCAL_LLM_API_KEY, and LOCAL_LLM_MODEL "
                     "are required when PROVIDER_NAME is local"
                 )
-            endpoint = urlsplit(self.LOCAL_LLM_BASE_URL)
-            if endpoint.scheme not in {"http", "https"} or not endpoint.netloc:
+            try:
+                endpoint = urlsplit(self.LOCAL_LLM_BASE_URL)
+                hostname = endpoint.hostname
+                port = endpoint.port
+            except ValueError as error:
+                raise ValueError(
+                    "LOCAL_LLM_BASE_URL must be an absolute http(s) URL"
+                ) from error
+            if (
+                endpoint.scheme not in {"http", "https"}
+                or not hostname
+                or (port is not None and not 1 <= port <= 65535)
+            ):
                 raise ValueError(
                     "LOCAL_LLM_BASE_URL must be an absolute http(s) URL"
                 )
