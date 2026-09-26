@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Any, TypeAlias
 
+from .chunk import _chunk_id
 from .config import IngestSettings, get_settings
 from .types import Chunk
-
 
 class PublishError(ValueError):
     """Raised when embedding or staging publication violates the ingest contract."""
@@ -106,8 +106,19 @@ def _chunk_metadata(
         raise PublishError(f"chunk {chunk.id} is missing section metadata")
     if not chunk.parent_id.strip():
         raise PublishError(f"chunk {chunk.id} is missing parent identity")
+    if not chunk.parent_text or not chunk.parent_text.strip():
+        raise PublishError(f"chunk {chunk.id} is missing parent_text")
     if chunk.chunking_policy is None:
         raise PublishError(f"chunk {chunk.id} is missing chunking policy")
+    expected_id = _chunk_id(
+        chunk.source_id,
+        chunk.source_version,
+        chunk.chunking_policy,
+        chunk.index,
+        chunk.text,
+    )
+    if chunk.id != expected_id:
+        raise PublishError(f"chunk {chunk.id} has an inconsistent child identity")
 
     metadata: dict[str, object] = {}
     for key, value in acl.items():
@@ -136,8 +147,7 @@ def _chunk_metadata(
             ),
         }
     )
-    if chunk.parent_text is not None:
-        metadata["parentText"] = _metadata_value(chunk.parent_text, "parentText")
+    metadata["parentText"] = _metadata_value(chunk.parent_text, "parentText")
     return metadata
 
 def _upserted_count(response: object) -> int:

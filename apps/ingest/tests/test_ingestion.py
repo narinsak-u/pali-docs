@@ -298,6 +298,74 @@ def test_publisher_rejects_incomplete_metadata_before_embedding() -> None:
     with pytest.raises(PublishError, match="section"):
         asyncio.run(publisher.publish([replace(chunks[0], section=None)], "rev-abc"))
     assert calls == 0
+def test_publisher_rejects_missing_parent_text_before_embedding() -> None:
+    document = _document("one")
+    chunk = chunk_text(
+        document.text,
+        source_id=document.source_id,
+        source_version=document.source_version,
+        title=document.title,
+    )[0]
+    calls = 0
+
+    def embed(_texts: list[str]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"data": [{"values": [1.0]}]}
+
+    publisher = PineconePublisher(
+        IngestSettings(),
+        embed_fn=embed,
+        upsert_fn=lambda records, _namespace: {"upserted_count": len(records)},
+    )
+    with pytest.raises(PublishError, match="parent_text"):
+        asyncio.run(publisher.publish([replace(chunk, parent_text=None)], "rev-abc"))
+    assert calls == 0
+
+
+def test_publisher_rejects_forged_child_identity_before_embedding() -> None:
+    document = _document("one")
+    chunk = chunk_text(
+        document.text,
+        source_id=document.source_id,
+        source_version=document.source_version,
+        title=document.title,
+    )[0]
+    calls = 0
+
+    def embed(_texts: list[str]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"data": [{"values": [1.0]}]}
+
+    publisher = PineconePublisher(
+        IngestSettings(),
+        embed_fn=embed,
+        upsert_fn=lambda records, _namespace: {"upserted_count": len(records)},
+    )
+    with pytest.raises(PublishError, match="identity"):
+        asyncio.run(publisher.publish([replace(chunk, id="forged-child-id")], "rev-abc"))
+    assert calls == 0
+
+
+def test_manifest_rejects_sources_without_chunks() -> None:
+    first = _document("first", source_id="content/docs/first")
+    second = _document("second", source_id="content/docs/second")
+    chunks = chunk_text(
+        first.text,
+        source_id=first.source_id,
+        source_version=first.source_version,
+        title=first.title,
+    )
+    with pytest.raises(ManifestError, match="source IDs"):
+        build_manifest(
+            [first, second],
+            chunks,
+            embedding_model="embed-v1",
+            embedding_input_type="passage",
+            retrieval_policy_version="v1",
+        )
+
 
 def test_manifest_immutable_promote_rollback_and_recovery(tmp_path: Path) -> None:
     store = ManifestStore(tmp_path)

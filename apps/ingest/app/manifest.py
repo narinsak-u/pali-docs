@@ -34,6 +34,10 @@ def _validate_chunks(
     policy: ChunkingPolicy,
 ) -> None:
     source_by_id = {document.source_id: document for document in documents}
+    chunk_source_ids = {chunk.source_id for chunk in chunks}
+    source_ids = set(source_by_id)
+    if chunk_source_ids != source_ids:
+        raise ManifestError("chunk source IDs must exactly cover manifest source IDs")
     seen_ids: set[str] = set()
     next_position_by_source: dict[str, int] = {}
     last_parent_by_source: dict[str, tuple[str, str, str, str]] = {}
