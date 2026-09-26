@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as ProviderEvaluation from "@/lib/rag/provider-evaluation";
 import type { AgentEventSink, AgentTurnRunner } from "@/lib/agent/types";
-import type * as AiSdkRunnerModule from "@/lib/agent/ai-sdk-runner";
-
 interface TestStream {
   writes: unknown[];
   completion: Promise<void>;
@@ -319,22 +318,41 @@ describe("POST /api/question", () => {
     expect(JSON.stringify(await response.json())).toContain("BACKEND ANSWER");
   });
   it("requires the trusted server context and never uses a client-shaped identity", () => {
-    const request = makeRequest(validBody);
-    const state = {
-      schemaVersion: "v1" as const,
-      state: "promoted" as const,
-      target: "langgraph" as const,
-      trafficPercent: 100,
-      cohortSalt: "server-owned",
-      startedAt: "2026-09-26T00:00:00.000Z",
-      observationEndsAt: "2026-09-26T01:00:00.000Z",
-      rollbackAvailableUntil: "2026-09-27T00:00:00.000Z",
-      promotedAt: "2026-09-26T01:00:00.000Z",
-    };
-
-    expect(selectQuestionBackend(request, "server-run", state)).toBe("ai-sdk");
-    withAuthenticatedTenant(request, { tenantId: "tenant-a" });
-    expect(selectQuestionBackend(request, "server-run", state)).toBe("langgraph");
+    vi.stubEnv(
+      "RAG_CANARY_STATE",
+      JSON.stringify({
+        schemaVersion: "v1",
+        state: "promoted",
+        target: "langgraph",
+        trafficPercent: 100,
+        cohortSalt: "server-owned",
+        startedAt: "2026-09-26T00:00:00.000Z",
+        observationEndsAt: "2026-09-26T01:00:00.000Z",
+        rollbackAvailableUntil: "2026-09-27T00:00:00.000Z",
+        promotedAt: "2026-09-26T01:00:00.000Z",
+        promotionEvidence: {
+          decision: { promote: true, reasons: [] },
+          input: {
+            comparison: null,
+            reviewedCases: null,
+            productionBaseline: null,
+            rollbackReady: true,
+          },
+        },
+      }),
+    );
+    const gate = vi.spyOn(ProviderEvaluation, "decidePromotion").mockReturnValue({
+      promote: true,
+      reasons: [],
+    });
+    try {
+      const request = makeRequest(validBody);
+      expect(selectQuestionBackend(request, "server-run")).toBe("ai-sdk");
+      withAuthenticatedTenant(request, { tenantId: "tenant-a" });
+      expect(selectQuestionBackend(request, "server-run")).toBe("langgraph");
+    } finally {
+      gate.mockRestore();
+    }
   });
   it("fails closed for schema-valid canary state without authoritative evidence", async () => {
     vi.stubEnv(

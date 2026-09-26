@@ -135,3 +135,24 @@ Tests       32 passed (32)
 ```
 
 The missing authentication producer and issue #42 authoritative reviewed-case/ProductionBaseline artifacts are explicit external prerequisites. This revision still makes no promotion or canary-readiness claim.
+
+## Re-review response 3
+
+The final re-review found that an exported route helper could accept an unvalidated `LoadedCanaryState`. The raw override was removed. `selectQuestionBackend` now always loads state through `readCanaryState`, which strictly deserializes and re-evaluates Task 6 evidence before targeting. A schema-valid-looking promoted state without evidence remains hosted; only a validated state plus the symbol-keyed trusted tenant context targets the internal backend in the seam test.
+
+RED evidence:
+
+```text
+$ cd apps/web && bunx vitest run tests/canary.test.ts tests/route.test.ts
+The route trusted-state test failed before the loader-only helper change because the helper accepted a direct raw state override.
+```
+
+GREEN evidence:
+
+```text
+$ cd apps/web && bunx vitest run tests/canary.test.ts tests/route.test.ts
+Test Files  2 passed (2)
+Tests       32 passed (32)
+```
+
+No auth middleware is present in this repository, so the external deployment prerequisite remains to call `withAuthenticatedTenant` from the authenticated server context. Until then, all real traffic remains hosted fallback and no canary readiness or promotion is claimed.

@@ -7,11 +7,7 @@ import {
   createStructuredTraceSink,
 } from "@/lib/agent/structured-trace-sink";
 import type { AgentTurnRunner } from "@/lib/agent/types";
-import {
-  readCanaryState,
-  selectInternalCanaryBackend,
-  type LoadedCanaryState,
-} from "@/lib/config/canary";
+import { readCanaryState, selectInternalCanaryBackend } from "@/lib/config/canary";
 import { getAuthenticatedTenantId } from "@/lib/config/canary-context";
 import { getModelConfig } from "@/lib/config/model";
 import { getRagConfig } from "@/lib/config/rag";
@@ -94,8 +90,8 @@ function createAiSdkResponse(
 export function selectQuestionBackend(
   request: Request,
   runId: string,
-  canaryState: LoadedCanaryState = readCanaryState(),
 ): RagBackend {
+  const canaryState = readCanaryState();
   const tenantId = getAuthenticatedTenantId(request);
   if (canaryState === null || (canaryState !== undefined && tenantId === undefined)) {
     return "ai-sdk";
