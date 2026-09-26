@@ -21,3 +21,8 @@
 
 - Parent bounds default to 1,600 characters and are independently configurable at ingestion and retrieval boundaries; production rollout remains disabled pending issue #48 artifacts.
 - Model-context hardening uses a fixed 50,000-character envelope cap as a final defensive bound; no prompt or passage-body telemetry was added.
+
+## Review fix round 1
+
+- Restored the FastAPI hierarchy expansion accumulator initialization that was omitted during the parent-group hardening edit.
+- The enabled-expansion regression failed before the fix with `NameError: name 'expanded' is not defined`; it now passes with the focused hierarchy set: `5 passed, 24 deselected`.

@@ -138,6 +138,7 @@ def _expand_by_parent(
         )
         groups.setdefault(key, []).append(passage)
 
+    expanded: list[GroundingPassage] = []
     seen_parents: set[tuple[str, str | None, str | None, str, str]] = set()
     for passage in passages:
         if (
