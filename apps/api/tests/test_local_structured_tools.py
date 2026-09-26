@@ -365,3 +365,8 @@ async def test_tool_call_rejects_arguments_that_fail_the_registered_schema() -> 
             [{"name": "echo", "args_schema": EchoArguments}],
             tool_choice="required",
         )
+
+
+def test_tool_call_id_is_bounded_for_public_lifecycle_events() -> None:
+    with pytest.raises(ValidationError):
+        ToolInvocation(call_id="x" * 201, name="echo", arguments={"value": "hello"})

@@ -18,7 +18,7 @@ class ToolInvocation(BaseModel):
         extra="forbid", frozen=True, populate_by_name=True
     )
 
-    call_id: str = Field(min_length=1, alias="callId")
+    call_id: str = Field(min_length=1, max_length=200, alias="callId")
     name: str = Field(min_length=1)
     arguments: dict[str, object]
 

@@ -119,18 +119,12 @@ export async function POST(req: Request): Promise<Response> {
   const runId = globalThis.crypto.randomUUID();
   const accessScope = getAuthenticatedAccessScope(req);
   const canaryState = readCanaryState();
-  if (canaryState !== undefined && accessScope === undefined) {
-    return new Response(JSON.stringify({ error: "authenticated access scope is required" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
   const backend = selectQuestionBackend(req, runId);
-  if (
-    accessScope === undefined &&
-    (canaryState !== undefined ||
-      (backend === "langgraph" && process.env.FASTAPI_BASE_URL?.trim() && process.env.FASTAPI_INTERNAL_TOKEN?.trim()))
-  ) {
+  const activeCanary = canaryState?.state === "canary" || canaryState?.state === "promoted";
+  const configuredLangGraph =
+    backend === "langgraph" &&
+    Boolean(process.env.FASTAPI_BASE_URL?.trim() && process.env.FASTAPI_INTERNAL_TOKEN?.trim());
+  if (accessScope === undefined && (activeCanary || configuredLangGraph)) {
     return new Response(JSON.stringify({ error: "authenticated access scope is required" }), {
       status: 401,
       headers: { "Content-Type": "application/json" },

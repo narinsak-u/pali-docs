@@ -337,6 +337,17 @@ export function selectInternalCanaryBackend(
   if (state.state === "hosted" || !identity?.tenantId.trim() || !identity.requestId.trim()) {
     return "ai-sdk";
   }
+  const now = Date.now();
+  const observationEnds = Date.parse(state.observationEndsAt ?? "");
+  const rollbackDeadline = Date.parse(state.rollbackAvailableUntil ?? "");
+  if (
+    !Number.isFinite(observationEnds) ||
+    !Number.isFinite(rollbackDeadline) ||
+    now >= observationEnds ||
+    now >= rollbackDeadline
+  ) {
+    return "ai-sdk";
+  }
   if (state.state === "promoted" || state.trafficPercent >= 100) return "langgraph";
   if (state.trafficPercent <= 0) return "ai-sdk";
   const digest = createHash("sha256")

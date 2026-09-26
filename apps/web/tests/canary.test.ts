@@ -17,15 +17,16 @@ const blockedDecision: PromotionDecision = {
 };
 
 function canaryState(): CanaryState {
+  const now = Date.now();
   return {
     schemaVersion: "v1",
     state: "canary",
     target: "langgraph",
     trafficPercent: 50,
     cohortSalt: "test-salt",
-    startedAt: "2026-09-26T00:00:00.000Z",
-    observationEndsAt: "2026-09-26T01:00:00.000Z",
-    rollbackAvailableUntil: "2026-09-27T00:00:00.000Z",
+    startedAt: new Date(now - 1_000).toISOString(),
+    observationEndsAt: new Date(now + 60 * 60 * 1_000).toISOString(),
+    rollbackAvailableUntil: new Date(now + 24 * 60 * 60 * 1_000).toISOString(),
   };
 }
 
@@ -66,6 +67,29 @@ describe("server-owned canary targeting", () => {
     expect(selectInternalCanaryBackend(identity, { ...state, trafficPercent: 0 })).toBe("ai-sdk");
     expect(selectInternalCanaryBackend(identity, { ...state, trafficPercent: 100 })).toBe("langgraph");
     expect(selectInternalCanaryBackend(undefined, state)).toBe("ai-sdk");
+  });
+
+  it("fails closed to hosted at observation and rollback deadlines", () => {
+    const identity = { tenantId: "tenant-a", requestId: "request-a" };
+    const now = Date.now();
+    const active = {
+      ...canaryState(),
+      observationEndsAt: new Date(now + 1_000).toISOString(),
+      rollbackAvailableUntil: new Date(now + 2_000).toISOString(),
+    };
+    expect(selectInternalCanaryBackend(identity, active)).toBe("langgraph");
+    expect(
+      selectInternalCanaryBackend(identity, {
+        ...active,
+        observationEndsAt: new Date(now - 1).toISOString(),
+      }),
+    ).toBe("ai-sdk");
+    expect(
+      selectInternalCanaryBackend(identity, {
+        ...active,
+        rollbackAvailableUntil: new Date(now - 1).toISOString(),
+      }),
+    ).toBe("ai-sdk");
   });
 
   it("does not carry one tenant's cohort assignment into another tenant", () => {

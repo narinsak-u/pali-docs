@@ -371,7 +371,7 @@ describe("POST /api/question", () => {
       "accessScope",
     );
   });
-  it("requires the trusted server context and never uses a client-shaped identity", () => {
+  it("does not use a client-shaped identity when persisted canary evidence is rejected", () => {
     vi.stubEnv(
       "RAG_CANARY_STATE",
       JSON.stringify({
@@ -379,11 +379,10 @@ describe("POST /api/question", () => {
         state: "promoted",
         target: "langgraph",
         trafficPercent: 100,
-        cohortSalt: "server-owned",
-        startedAt: "2026-09-26T00:00:00.000Z",
-        observationEndsAt: "2026-09-26T01:00:00.000Z",
-        rollbackAvailableUntil: "2026-09-27T00:00:00.000Z",
-        promotedAt: "2026-09-26T01:00:00.000Z",
+        startedAt: "2026-09-27T00:00:00.000Z",
+        observationEndsAt: "2026-09-27T01:00:00.000Z",
+        rollbackAvailableUntil: "2026-09-28T00:00:00.000Z",
+        promotedAt: "2026-09-27T00:30:00.000Z",
         promotionEvidence: {
           decision: { promote: true, reasons: [] },
           input: {
@@ -403,7 +402,7 @@ describe("POST /api/question", () => {
       const unauthenticated = new Request("http://localhost/api/question");
       expect(selectQuestionBackend(unauthenticated, "server-run")).toBe("ai-sdk");
       const request = makeRequest(validBody);
-      expect(selectQuestionBackend(request, "server-run")).toBe("langgraph");
+      expect(selectQuestionBackend(request, "server-run")).toBe("ai-sdk");
     } finally {
       gate.mockRestore();
     }
@@ -447,6 +446,38 @@ describe("POST /api/question", () => {
     expect(response.status).toBe(200);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mocked.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps malformed and hosted canary state on hosted fallback without scope", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const request = () =>
+      new Request("http://localhost/api/question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validBody),
+      });
+
+    for (const state of [
+      "null",
+      JSON.stringify({
+        schemaVersion: "v1",
+        state: "hosted",
+        target: "langgraph",
+        trafficPercent: 0,
+        cohortSalt: "server-owned",
+        startedAt: "2026-09-26T00:00:00.000Z",
+        observationEndsAt: "2026-09-26T01:00:00.000Z",
+        rollbackAvailableUntil: "2026-09-27T00:00:00.000Z",
+      }),
+    ]) {
+      vi.stubEnv("RAG_CANARY_STATE", state);
+      const response = await POST(request());
+      expect(response.status).toBe(200);
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
   });
 
   it("keeps the explicit AI SDK override at one hundred percent LangGraph traffic", async () => {

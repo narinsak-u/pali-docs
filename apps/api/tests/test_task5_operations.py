@@ -141,7 +141,10 @@ async def test_question_response_correlates_request_and_run_without_exposing_mes
             "type": "http",
             "method": "POST",
             "path": "/v1/question",
-            "headers": [(b"x-request-id", b"req-123")],
+            "headers": [
+                (b"x-request-id", b"req-123"),
+                (b"x-access-scope", b'{"tenantId":"tenant-test"}'),
+            ],
         }
     )
     response = await question_module.question(
@@ -197,7 +200,12 @@ async def test_question_timeout_allocates_sequence_after_queued_prior_event(
             {"runId": "timeout-run", "messages": [{"role": "user", "content": "hello"}]}
         ),
         main_module.Request(
-            {"type": "http", "method": "POST", "path": "/v1/question", "headers": []}
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/v1/question",
+                "headers": [(b"x-access-scope", b'{"tenantId":"tenant-test"}')],
+            }
         ),
     )
     body = b"".join([chunk async for chunk in response.body_iterator])
