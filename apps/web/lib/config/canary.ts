@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { PromotionDecision } from "@/lib/rag/provider-evaluation";
+import { decidePromotion, type ProviderComparison, type PromotionDecision } from "@/lib/rag/provider-evaluation";
 import type { RagBackend } from "@/lib/config/rollout";
 
 export const CANARY_OBSERVATION_WINDOW_MS = 60 * 60 * 1000;
@@ -13,12 +13,26 @@ export interface CanaryState {
   state: ActiveCanaryState;
   target: "langgraph";
   trafficPercent: number;
+
   cohortSalt: string;
   startedAt?: string;
   observationEndsAt?: string;
   rollbackAvailableUntil?: string;
   promotedAt?: string;
   lastRollbackReason?: string;
+  promotionEvidence?: CanaryPromotionEvidence;
+}
+
+export type CanaryPromotionInput = {
+  comparison: ProviderComparison;
+  reviewedCases: unknown;
+  productionBaseline: unknown;
+  rollbackReady?: boolean;
+};
+
+export interface CanaryPromotionEvidence {
+  decision: PromotionDecision;
+  input: CanaryPromotionInput;
 }
 
 export interface CanaryIdentity {
@@ -44,6 +58,22 @@ const canaryStateSchema = z
     cohortSalt: z.string().min(1).max(200),
     startedAt: z.string().datetime({ offset: true }).optional(),
     observationEndsAt: z.string().datetime({ offset: true }).optional(),
+    promotionEvidence: z
+      .object({
+        decision: z
+          .object({ promote: z.boolean(), reasons: z.array(z.string()) })
+          .strict(),
+        input: z
+          .object({
+            comparison: z.unknown(),
+            reviewedCases: z.unknown(),
+            productionBaseline: z.unknown(),
+            rollbackReady: z.boolean().optional(),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
     rollbackAvailableUntil: z.string().datetime({ offset: true }).optional(),
     promotedAt: z.string().datetime({ offset: true }).optional(),
     lastRollbackReason: z.string().min(1).max(120).optional(),
@@ -54,7 +84,7 @@ function validTimestamp(value: string): boolean {
   return Number.isFinite(Date.parse(value));
 }
 
-function validateState(value: unknown): CanaryState {
+function validateState(value: unknown, requirePromotionEvidence = true): CanaryState {
   const state = canaryStateSchema.parse(value);
   if (state.state === "hosted") return state;
   if (!state.startedAt || !state.observationEndsAt || !state.rollbackAvailableUntil) {
@@ -75,6 +105,22 @@ function validateState(value: unknown): CanaryState {
   if (state.promotedAt && !validTimestamp(state.promotedAt)) {
     throw new Error("promoted state has invalid promotion time");
   }
+  if (requirePromotionEvidence) {
+    const evidence = state.promotionEvidence;
+    if (!evidence) throw new Error("active canary state requires Task 6 promotion evidence");
+    let verified: PromotionDecision;
+    try {
+      verified = decidePromotion(evidence.input);
+    } catch {
+      throw new Error("Task 6 promotion evidence is invalid");
+    }
+    if (
+      !acceptedDecision(verified) ||
+      JSON.stringify(verified) !== JSON.stringify(evidence.decision)
+    ) {
+      throw new Error("Task 6 promotion evidence does not pass all gates");
+    }
+  }
   return state;
 }
 
@@ -90,12 +136,26 @@ function hostedState(reason?: string): CanaryState {
 }
 
 function copyState(state: CanaryState): CanaryState {
-  return validateState(JSON.parse(JSON.stringify(state)));
+  return validateState(JSON.parse(JSON.stringify(state)), false);
 }
+
 
 function acceptedDecision(decision: PromotionDecision): boolean {
   return decision.promote === true && decision.reasons.length === 0;
 }
+
+function verifiedPromotionEvidence(evidence: CanaryPromotionEvidence): boolean {
+  try {
+    const verified = decidePromotion(evidence.input);
+    return (
+      acceptedDecision(verified) &&
+      JSON.stringify(verified) === JSON.stringify(evidence.decision)
+    );
+  } catch {
+    return false;
+  }
+}
+
 
 function parseNow(now: string): number {
   const parsed = Date.parse(now);
@@ -120,6 +180,7 @@ export class CanaryController {
       now: string;
       trafficPercent: number;
       cohortSalt: string;
+      promotionEvidence?: CanaryPromotionEvidence;
       observationWindowMs?: number;
       rollbackWindowMs?: number;
     },
@@ -128,6 +189,16 @@ export class CanaryController {
     if (!acceptedDecision(decision)) {
       if (reasons.length === 0) reasons.push("all promotion gates must pass");
       return { accepted: false, state: this.snapshot(), reasons };
+    }
+    if (
+      !options.promotionEvidence ||
+      !verifiedPromotionEvidence(options.promotionEvidence)
+    ) {
+      return {
+        accepted: false,
+        state: this.snapshot(),
+        reasons: ["authoritative Task 6 promotion evidence is required"],
+      };
     }
     if (this.state.state !== "hosted") {
       return {
@@ -167,6 +238,7 @@ export class CanaryController {
       startedAt: new Date(now).toISOString(),
       observationEndsAt: new Date(now + observationWindowMs).toISOString(),
       rollbackAvailableUntil: new Date(now + rollbackWindowMs).toISOString(),
+      promotionEvidence: options.promotionEvidence,
     };
     return { accepted: true, state: this.snapshot(), reasons: [] };
   }
@@ -186,11 +258,19 @@ export class CanaryController {
     }
     const current = parseNow(now);
     const observationEnds = Date.parse(this.state.observationEndsAt ?? "");
+    const rollbackDeadline = Date.parse(this.state.rollbackAvailableUntil ?? "");
     if (current < observationEnds) {
       return {
         accepted: false,
         state: this.snapshot(),
         reasons: ["observation window has not elapsed"],
+      };
+    }
+    if (current >= rollbackDeadline) {
+      return {
+        accepted: false,
+        state: this.snapshot(),
+        reasons: ["rollback window has expired; revalidation is required"],
       };
     }
     this.state = { ...this.state, state: "promoted", promotedAt: new Date(current).toISOString() };

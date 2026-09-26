@@ -65,26 +65,28 @@ describe("server-owned canary targeting", () => {
     expect(selectInternalCanaryBackend(tenantB, state)).toBe(before);
   });
 
-  it("promotes only after a passing gate and the observation window", () => {
+  it("rejects a passing-looking decision without enforceable Task 6 evidence", () => {
     const controller = new CanaryController();
-    expect(
-      controller.startCanary(passingDecision, {
-        now: "2026-09-26T00:00:00.000Z",
-        trafficPercent: 10,
-        cohortSalt: "test-salt",
-        observationWindowMs: 60 * 60 * 1000,
-        rollbackWindowMs: 24 * 60 * 60 * 1000,
-      }),
-    ).toMatchObject({ accepted: true });
 
-    expect(
-      controller.promote(blockedDecision, "2026-09-26T00:30:00.000Z").accepted,
-    ).toBe(false);
+    const result = controller.startCanary(passingDecision, {
+      now: "2026-09-26T00:00:00.000Z",
+      trafficPercent: 10,
+      cohortSalt: "test-salt",
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.reasons).toContain("authoritative Task 6 promotion evidence is required");
+    expect(controller.snapshot().state).toBe("hosted");
+  });
+
+  it("rejects promotion at the rollback-window boundary", () => {
+    const controller = new CanaryController(canaryState());
+
+    const result = controller.promote(passingDecision, "2026-09-27T00:00:00.000Z");
+
+    expect(result.accepted).toBe(false);
+    expect(result.reasons).toContain("rollback window has expired; revalidation is required");
     expect(controller.snapshot().state).toBe("canary");
-    expect(
-      controller.promote(passingDecision, "2026-09-26T01:00:00.000Z").accepted,
-    ).toBe(true);
-    expect(controller.snapshot().state).toBe("promoted");
   });
 
   it("rolls back to hosted and targets no canary traffic", () => {
@@ -100,15 +102,19 @@ describe("server-owned canary targeting", () => {
     expect(result.fallback).toBe("ai-sdk");
   });
 
-  it("serializes and restores state without changing targeting", () => {
-    const state = canaryState();
+  it("serializes hosted state and rejects a schema-valid active-state bypass", () => {
+    const state: CanaryState = {
+      schemaVersion: "v1",
+      state: "hosted",
+      target: "langgraph",
+      trafficPercent: 0,
+      cohortSalt: "inactive",
+    };
 
-    const restored = deserializeCanaryState(serializeCanaryState(state));
-
-    expect(restored).toEqual(state);
-    expect(selectInternalCanaryBackend({ tenantId: "tenant-a", requestId: "request" }, restored)).toBe(
-      selectInternalCanaryBackend({ tenantId: "tenant-a", requestId: "other-request" }, state),
-    );
+    expect(deserializeCanaryState(serializeCanaryState(state))).toEqual(state);
+    expect(() =>
+      deserializeCanaryState(JSON.stringify({ ...canaryState(), promotionEvidence: undefined })),
+    ).toThrow("Task 6 promotion evidence");
   });
 
   it("sends all trusted traffic to the target after explicit promotion", () => {

@@ -86,6 +86,11 @@ function createAiSdkResponse(
   }
 }
 
+function authenticatedTenantId(req: Request): string | undefined {
+  const value = (req as Request & { authenticatedTenantId?: unknown }).authenticatedTenantId;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
 export async function POST(req: Request): Promise<Response> {
   let messages: SafeQuestionRequest["messages"];
   try {
@@ -96,13 +101,14 @@ export async function POST(req: Request): Promise<Response> {
 
   const runId = globalThis.crypto.randomUUID();
   const canaryState = readCanaryState();
+  const tenantId = authenticatedTenantId(req);
   const backend =
-    canaryState === null
+    canaryState === null || (canaryState !== undefined && tenantId === undefined)
       ? "ai-sdk"
       : canaryState === undefined
         ? selectRagBackend(runId, getRolloutConfig())
         : selectInternalCanaryBackend(
-            { tenantId: runId, requestId: runId },
+            { tenantId, requestId: runId },
             canaryState,
           );
 

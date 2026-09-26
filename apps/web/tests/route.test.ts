@@ -315,7 +315,7 @@ describe("POST /api/question", () => {
     });
     expect(JSON.stringify(await response.json())).toContain("BACKEND ANSWER");
   });
-  it("uses only a serialized server-owned canary state for internal targeting", async () => {
+  it("fails closed for schema-valid canary state without authoritative evidence", async () => {
     vi.stubEnv(
       "RAG_CANARY_STATE",
       JSON.stringify({
@@ -333,24 +333,13 @@ describe("POST /api/question", () => {
     vi.stubEnv("RAG_BACKEND", "ai-sdk");
     vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
     vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      makeLangGraphResponse([
-        {
-          eventType: "run.started",
-          payload: { runId: "00000000-0000-4000-8000-000000000006" },
-        },
-        {
-          eventType: "run.completed",
-          payload: { runId: "00000000-0000-4000-8000-000000000006", outcome: "answered" },
-        },
-      ]),
-    );
+    const fetchMock = vi.spyOn(globalThis, "fetch");
 
-    const response = await POST(makeRequest({ ...validBody, backend: "ai-sdk" }));
+    const response = await POST(makeRequest({ ...validBody, backend: "langgraph" }));
 
     expect(response.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(mocked.runTurn).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocked.runTurn).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed to the TypeScript runner for invalid serialized canary state", async () => {

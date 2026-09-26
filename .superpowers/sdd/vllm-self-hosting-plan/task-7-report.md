@@ -9,9 +9,9 @@ Added `apps/web/lib/config/canary.ts` as the server-owned rollout control seam. 
 - `CanaryController.startCanary`, which accepts only a passing Task 6 `PromotionDecision` (`promote: true` with no gate reasons), validates bounded traffic, and records explicit observation and rollback windows.
 - `CanaryController.promote`, which requires another passing Task 6 decision and an elapsed observation window. Promotion is an explicit operator transition; there is no automatic promotion based on traffic or time.
 - `CanaryController.rollback`, which transitions canary or promoted traffic back to the hosted TypeScript runner and records a bounded operator reason. The current windows are one hour for observation and 24 hours for the documented rollback period.
-- Strict serialization/deserialization and environment loading. A configured but malformed `RAG_CANARY_STATE` is rejected and the public BFF falls back to TypeScript rather than interpreting partial state.
+- Strict serialization/deserialization and environment loading. A configured but malformed `RAG_CANARY_STATE` is rejected and the public BFF falls back to TypeScript rather than interpreting partial state. Active serialized state also carries the complete Task 6 promotion input and is re-evaluated before it can target traffic.
 
-`apps/web/app/api/question/route.ts` now consumes only a server-generated request identity when a valid serialized canary state is explicitly configured. Without that state, the existing environment-controlled preview/rollback path remains unchanged. The public request body cannot select a provider, and no canary state, credentials, endpoint, or evaluation artifact is exposed through the browser response.
+`apps/web/app/api/question/route.ts` now consumes only a server-injected authenticated tenant identity and a server-generated request identity when a valid serialized canary state is explicitly configured. Without trusted tenant identity, without valid Task 6 evidence, or with malformed state, the route uses hosted TypeScript. Without canary state, the existing environment-controlled preview/rollback path remains unchanged. The public request body cannot select a provider, and no canary state, credentials, endpoint, or evaluation artifact is exposed through the browser response.
 
 ## TDD evidence
 
@@ -41,7 +41,7 @@ After implementing the state machine and BFF wiring:
 ```text
 $ cd apps/web && bunx vitest run tests/canary.test.ts tests/route.test.ts tests/rollout.test.ts
 Test Files  3 passed (3)
-Tests       46 passed (46)
+Tests       47 passed (47)
 ```
 
 The focused tests cover:
@@ -49,9 +49,9 @@ The focused tests cover:
 - absent authoritative baseline / failing Task 6 decision;
 - deterministic tenant cohort assignment and missing-identity fallback;
 - no cross-tenant assignment leakage;
-- promotion blocked by a failing gate and by an incomplete observation window;
+- promotion blocked by a failing gate, missing enforceable Task 6 evidence, an incomplete observation window, and an expired rollback window;
 - explicit rollback to hosted fallback;
-- state serialization and restoration;
+- strict hosted-state serialization and rejection of schema-valid active-state bypasses;
 - server-only serialized canary routing and invalid-state fail-closed behavior;
 - existing rollout boundaries and public route behavior.
 
@@ -81,3 +81,31 @@ Before any real canary or promotion, external owners must:
 3. Confirm hosted rollback readiness and keep the TypeScript runner available for the documented 24-hour rollback window.
 4. Persist and distribute only the server-owned serialized canary state through the deployment control plane; do not accept state, provider selection, tenant scope, or credentials from browser requests.
 5. Exercise real private vLLM readiness/completion, ingress isolation, authenticated metrics, and rollback on the deployment host.
+
+## Review response
+
+The focused re-review identified three fail-closed issues; all are addressed in this revision:
+
+1. The public route no longer derives tenant identity from `runId`. Canary targeting requires a trusted server-injected `authenticatedTenantId` request property supplied by authentication middleware; if that identity is absent, canary state routes to hosted TypeScript. Request JSON and client headers remain unusable for targeting. Deterministic same-tenant and missing-identity tests cover this seam.
+2. Active serialized canary/promoted state now carries `CanaryPromotionEvidence`: the complete Task 6 `PromotionDecision` plus its comparison/reviewed-cases/ProductionBaseline/rollback input. Deserialization recomputes `decidePromotion`, requires an exact passing decision, and rejects schema-valid state without enforceable authoritative evidence. A bypass-state regression verifies this fail-closed behavior.
+3. Promotion rejects the exact rollback-window boundary and any later timestamp, requiring revalidation rather than entering all-traffic promoted state after the documented window.
+
+RED evidence for this review:
+
+```text
+$ cd apps/web && bunx vitest run tests/canary.test.ts tests/route.test.ts -t 'canary|serialized|promotion|rollback|trusted traffic|cross-tenant|deterministically|baseline'
+3 failed
+- passing-looking decision without Task 6 evidence was accepted before evidence enforcement
+- active state serialized without promotion evidence before strict persistence validation
+- schema-valid canary state attempted backend targeting before route fail-closed integration
+```
+
+GREEN evidence after the fixes:
+
+```text
+$ cd apps/web && bunx vitest run tests/canary.test.ts tests/route.test.ts
+Test Files  2 passed (2)
+Tests       29 passed (29)
+```
+
+The external #42 reviewed-case and ProductionBaseline prerequisite remains unavailable; this revision still makes no promotion or canary-readiness claim.
