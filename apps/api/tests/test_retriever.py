@@ -42,6 +42,7 @@ def match(
         "metadata": {
             "text": text,
             "source": "book-1",
+            "sourceVersion": "source-version-1",
             "title": "Chapter 1",
             "section": "§1",
             "corpusRevision": revision,
@@ -83,6 +84,44 @@ async def test_retriever_discards_untrusted_metadata_and_scores() -> None:
     assert "stale" not in result.context
 
 
+@pytest.mark.asyncio
+async def test_retriever_preserves_source_and_hierarchy_provenance() -> None:
+    child = match("child")
+    child["metadata"]["parentId"] = "parent-1"  # type: ignore[index]
+    child["metadata"]["parentText"] = "parent context"  # type: ignore[index]
+
+    retriever = PineconeRetriever(
+        settings=settings(),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": [child]},
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert result.passages[0].source_version == "source-version-1"
+    assert result.passages[0].parent_id == "parent-1"
+    assert result.citations[0].source_version == "source-version-1"
+    assert result.citations[0].section == "§1"
+@pytest.mark.asyncio
+async def test_retriever_discards_missing_source_version_metadata() -> None:
+    metadata = {
+        "text": "text",
+        "source": "book-1",
+        "title": "Chapter 1",
+        "section": "§1",
+        "corpusRevision": "rev-1",
+    }
+    retriever = PineconeRetriever(
+        settings=settings(),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": [match("missing-version", metadata=metadata)]},
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, InsufficientEvidenceBundle)
+    assert result.passages == []
 
 @pytest.mark.asyncio
 async def test_retriever_returns_unavailable_when_all_scores_are_malformed() -> None:
@@ -152,7 +191,9 @@ async def test_retriever_expands_children_with_the_same_parent_when_enabled() ->
     child["metadata"]["parentId"] = "parent-1"  # type: ignore[index]
     child["metadata"]["parentText"] = "section context"  # type: ignore[index]
     sibling["metadata"]["parentId"] = "parent-1"  # type: ignore[index]
+    sibling["metadata"]["parentText"] = "section context"  # type: ignore[index]
     unrelated["metadata"]["parentId"] = "parent-2"  # type: ignore[index]
+    unrelated["metadata"]["parentText"] = "other context"  # type: ignore[index]
 
     retriever = PineconeRetriever(
         settings(RAG_ACCEPTED_TOP_K=2, RAG_HIERARCHY_EXPANSION=True),
@@ -166,7 +207,6 @@ async def test_retriever_expands_children_with_the_same_parent_when_enabled() ->
 
     assert isinstance(result, GroundedBundle)
     assert [passage.id for passage in result.passages] == ["child", "sibling"]
-
 
     assert "section context" in result.passages[0].text
 @pytest.mark.asyncio
@@ -215,6 +255,13 @@ async def test_retriever_falls_back_to_dense_order_when_reranker_fails() -> None
         "score-first",
         "term-match",
     ]
+    assert result.retrieval_metrics is not None
+    assert result.retrieval_metrics.reranker_used is False
+    assert result.retrieval_metrics.reranker_fallback_reason == "unavailable"
+    assert result.retrieval_metrics.reranker_model_version == "lexical-v1"
+    assert result.retrieval_metrics.retrieval_config_version == "rag-v1"
+    assert result.retrieval_metrics.reranker_latency_ms is not None
+    assert result.retrieval_metrics.reranker_latency_ms >= 0
 
 
 @pytest.mark.asyncio

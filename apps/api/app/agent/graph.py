@@ -9,7 +9,7 @@ from typing_extensions import TypedDict
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from app.rag.types import GroundedBundle, GroundingBundle
+from app.rag.types import Citation, GroundedBundle, GroundingBundle
 
 from .types import (
     AgentModelStages,
@@ -182,6 +182,20 @@ def _run_id(state: AgentGraphState) -> str:
     return _input(state).run_id
 
 
+def _citation_event_payload(citation: Citation) -> dict[str, object]:
+    return {
+        "id": citation.id,
+        "source": citation.source,
+        **(
+            {"sourceVersion": citation.source_version}
+            if citation.source_version is not None
+            else {}
+        ),
+        "title": citation.title,
+        **({"section": citation.section} if citation.section is not None else {}),
+        **({"parentId": citation.parent_id} if citation.parent_id is not None else {}),
+    }
+
 def _cited_sources(grounding: GroundedBundle, citation_ids: list[str]) -> list[object] | None:
     if not citation_ids:
         return None
@@ -324,6 +338,32 @@ async def retrieve_node(state: AgentGraphState, config: object) -> dict[str, obj
         if bundle.status == "grounded"
         else []
     )
+    accepted_provenance = (
+        [_citation_event_payload(citation) for citation in bundle.citations]
+        if bundle.status == "grounded"
+        else []
+    )
+    metrics_payload: dict[str, object] = {
+        "acceptedProvenance": accepted_provenance,
+    }
+    if metrics is not None:
+        metrics_payload.update(
+            {
+                "candidateCount": metrics.candidate_count,
+                "acceptedCount": metrics.accepted_count,
+                "hierarchyExpansion": metrics.hierarchy_expansion,
+                "rerankerUsed": metrics.reranker_used,
+                "rerankerFallbackReason": metrics.reranker_fallback_reason,
+            }
+        )
+        if metrics.reranker_latency_ms is not None:
+            metrics_payload["rerankerLatencyMs"] = metrics.reranker_latency_ms
+        if metrics.reranker_model_version is not None:
+            metrics_payload["rerankerModelVersion"] = metrics.reranker_model_version
+        if metrics.retrieval_config_version is not None:
+            metrics_payload["retrievalConfigVersion"] = (
+                metrics.retrieval_config_version
+            )
     return {
         "retrieval_attempt": attempt,
         "grounding": bundle,
@@ -335,16 +375,7 @@ async def retrieve_node(state: AgentGraphState, config: object) -> dict[str, obj
                 attempt=attempt,
                 matchCount=match_count,
                 acceptedSourceIds=accepted_source_ids,
-                **(
-                    {
-                        "candidateCount": metrics.candidate_count,
-                        "acceptedCount": metrics.accepted_count,
-                        "hierarchyExpansion": metrics.hierarchy_expansion,
-                        "rerankerUsed": metrics.reranker_used,
-                    }
-                    if metrics is not None
-                    else {}
-                ),
+                **metrics_payload,
             ),
         ],
     }
@@ -465,7 +496,15 @@ async def validate_citations_node(
         "citations": citations,
         "events": [
             _event(run_id, "answer.completed", text=draft.answer),
-            _event(run_id, "citations.completed", citations=citations),
+            _event(
+                run_id,
+                "citations.completed",
+                citations=[
+                    _citation_event_payload(citation)
+                    for citation in citations
+                    if isinstance(citation, Citation)
+                ],
+            ),
         ],
     }
 

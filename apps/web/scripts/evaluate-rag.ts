@@ -74,6 +74,10 @@ export async function runEvaluationCase({
   let acceptedCount: number | undefined;
   let hierarchyExpansion: boolean | undefined;
   let rerankerUsed: boolean | undefined;
+  let rerankerFallbackReason: RagEvaluationRecord["rerankerFallbackReason"];
+  let rerankerLatencyMs: number | undefined;
+  let rerankerModelVersion: string | undefined;
+  let retrievalConfigVersion: string | undefined;
   let failure: string | undefined;
 
   const sink: AgentEventSink = {
@@ -93,6 +97,10 @@ export async function runEvaluationCase({
         acceptedCount = event.acceptedCount ?? event.acceptedSourceIds?.length;
         hierarchyExpansion = event.hierarchyExpansion;
         rerankerUsed = event.rerankerUsed;
+        rerankerFallbackReason = event.rerankerFallbackReason;
+        rerankerLatencyMs = event.rerankerLatencyMs;
+        rerankerModelVersion = event.rerankerModelVersion;
+        retrievalConfigVersion = event.retrievalConfigVersion;
         return;
       }
       if (event.type === "retrieval.failed" || event.type === "run.failed") {
@@ -161,6 +169,10 @@ export async function runEvaluationCase({
     ...(acceptedCount === undefined ? {} : { acceptedCount }),
     ...(hierarchyExpansion === undefined ? {} : { hierarchyExpansion }),
     ...(rerankerUsed === undefined ? {} : { rerankerUsed }),
+    ...(rerankerFallbackReason === undefined ? {} : { rerankerFallbackReason }),
+    ...(rerankerLatencyMs === undefined ? {} : { rerankerLatencyMs }),
+    ...(rerankerModelVersion === undefined ? {} : { rerankerModelVersion }),
+    ...(retrievalConfigVersion === undefined ? {} : { retrievalConfigVersion }),
     sourceRecall: sourceRecall(
       evaluationCase.expectedSourceIds,
       observedSourceIds,

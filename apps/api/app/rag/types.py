@@ -15,15 +15,21 @@ class Citation:
     id: str
     source: str
     title: str
+    source_version: str | None = field(default=None, kw_only=True)
     section: str | None = field(default=None, kw_only=True)
+    parent_id: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
 class GroundingPassage(Citation):
     text: str
     score: float
-    parent_id: str | None = field(default=None, kw_only=True)
     parent_text: str | None = field(default=None, kw_only=True)
+
+
+RerankerFallbackReason: TypeAlias = Literal[
+    "disabled", "timeout", "unavailable", "invalid-output", "cancelled"
+]
 
 @dataclass(frozen=True, slots=True)
 class RetrievalMetrics:
@@ -31,7 +37,12 @@ class RetrievalMetrics:
     accepted_count: int
     hierarchy_expansion: bool
     reranker_used: bool
-
+    reranker_fallback_reason: RerankerFallbackReason | None = field(
+        default=None, kw_only=True
+    )
+    reranker_latency_ms: float | None = field(default=None, kw_only=True)
+    reranker_model_version: str | None = field(default=None, kw_only=True)
+    retrieval_config_version: str | None = field(default=None, kw_only=True)
 
 @dataclass(frozen=True, slots=True)
 class GroundedBundle:

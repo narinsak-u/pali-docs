@@ -7,6 +7,7 @@ import type {
   GroundingBundle,
   GroundingPassage,
   RetrievalRequest,
+  RerankerFallbackReason,
 } from "@/lib/rag/types";
 
 function escapeXml(value: string): string {
@@ -19,10 +20,16 @@ function escapeXml(value: string): string {
 }
 
 function formatPassage(passage: GroundingPassage): string {
+  const sourceVersion = passage.sourceVersion
+    ? ` source-version="${escapeXml(passage.sourceVersion)}"`
+    : "";
   const section = passage.section
     ? ` section="${escapeXml(passage.section)}"`
     : "";
-  return `<passage id="${escapeXml(passage.id)}" source="${escapeXml(passage.source)}" title="${escapeXml(passage.title)}"${section}>\n${escapeXml(passage.text)}\n</passage>`;
+  const parentId = passage.parentId
+    ? ` parent-id="${escapeXml(passage.parentId)}"`
+    : "";
+  return `<passage id="${escapeXml(passage.id)}" source="${escapeXml(passage.source)}"${sourceVersion} title="${escapeXml(passage.title)}"${section}${parentId}>\n${escapeXml(passage.text)}\n</passage>`;
 }
 
 async function rerankWithTimeout(
@@ -144,8 +151,12 @@ function toCitation(passage: GroundingPassage): Citation {
   return {
     id: passage.id,
     source: passage.source,
+    ...(passage.sourceVersion === undefined
+      ? {}
+      : { sourceVersion: passage.sourceVersion }),
     title: passage.title,
     ...(passage.section === undefined ? {} : { section: passage.section }),
+    ...(passage.parentId === undefined ? {} : { parentId: passage.parentId }),
   };
 }
 
@@ -171,6 +182,7 @@ function isValidReranked(
       candidate.score === rerankedPassage.score &&
       candidate.text === rerankedPassage.text &&
       candidate.source === rerankedPassage.source &&
+      candidate.sourceVersion === rerankedPassage.sourceVersion &&
       candidate.title === rerankedPassage.title &&
       candidate.section === rerankedPassage.section &&
       candidate.parentId === rerankedPassage.parentId &&
@@ -231,15 +243,22 @@ export async function retrieve(
       errorCode: "vector_store_unavailable",
     };
   }
-
   const candidateCount = candidates.length;
   let rerankerUsed = false;
+  let rerankerFallbackReason: RerankerFallbackReason | null =
+    config.RAG_RERANKER_ENABLED ? null : "disabled";
+  let rerankerLatencyMs = 0;
+  const rerankerModelVersion = config.RAG_RERANKER_ENABLED
+    ? "lexical-v1"
+    : undefined;
+  const retrievalConfigVersion = "rag-v1";
   if (config.RAG_RERANKER_ENABLED) {
     const denseCandidates = candidates;
     const boundedCandidates = denseCandidates.slice(
       0,
       config.RAG_RERANKER_MAX_CANDIDATES,
     );
+    const rerankerStartedAt = Date.now();
     try {
       const reranked = await rerankWithTimeout(
         query,
@@ -249,6 +268,7 @@ export async function retrieve(
         dependencies.rerankCandidates ?? rerankCandidates,
         signal,
       );
+      rerankerLatencyMs = Date.now() - rerankerStartedAt;
       if (
         isValidReranked(
           boundedCandidates,
@@ -259,10 +279,18 @@ export async function retrieve(
         candidates = reranked;
         rerankerUsed = true;
       } else {
+        rerankerFallbackReason = "invalid-output";
         candidates = denseCandidates;
       }
-    } catch {
+    } catch (error: unknown) {
+      rerankerLatencyMs = Date.now() - rerankerStartedAt;
       signal?.throwIfAborted();
+      rerankerFallbackReason =
+        error instanceof Error && error.message === "reranker timed out"
+          ? "timeout"
+          : error instanceof DOMException && error.name === "AbortError"
+            ? "cancelled"
+            : "unavailable";
       candidates = denseCandidates;
     }
   }
@@ -289,6 +317,10 @@ export async function retrieve(
         acceptedCount: 0,
         hierarchyExpansion: config.RAG_HIERARCHY_EXPANSION,
         rerankerUsed,
+        rerankerFallbackReason,
+        rerankerLatencyMs,
+        ...(rerankerModelVersion === undefined ? {} : { rerankerModelVersion }),
+        retrievalConfigVersion,
       },
     };
   }
@@ -305,6 +337,10 @@ export async function retrieve(
       acceptedCount: selected.passages.length,
       hierarchyExpansion: config.RAG_HIERARCHY_EXPANSION,
       rerankerUsed,
+      rerankerFallbackReason,
+      rerankerLatencyMs,
+      ...(rerankerModelVersion === undefined ? {} : { rerankerModelVersion }),
+      retrievalConfigVersion,
     },
   };
 }

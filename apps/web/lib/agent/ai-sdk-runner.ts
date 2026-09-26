@@ -391,6 +391,23 @@ export function createAiSdkAgentTurnRunner(
             ...(bundle.status === "grounded"
               ? {
                   acceptedSourceIds: bundle.passages.map(({ source }) => source),
+                  acceptedProvenance: bundle.passages.map(
+                    ({
+                      id,
+                      source,
+                      sourceVersion,
+                      title,
+                      section,
+                      parentId,
+                    }) => ({
+                      id,
+                      source,
+                      ...(sourceVersion === undefined ? {} : { sourceVersion }),
+                      title,
+                      ...(section === undefined ? {} : { section }),
+                      ...(parentId === undefined ? {} : { parentId }),
+                    }),
+                  ),
                 }
               : {}),
             ...(bundle.retrievalMetrics === undefined
@@ -398,8 +415,35 @@ export function createAiSdkAgentTurnRunner(
               : {
                   candidateCount: bundle.retrievalMetrics.candidateCount,
                   acceptedCount: bundle.retrievalMetrics.acceptedCount,
-                  hierarchyExpansion: bundle.retrievalMetrics.hierarchyExpansion,
+                  hierarchyExpansion:
+                    bundle.retrievalMetrics.hierarchyExpansion,
                   rerankerUsed: bundle.retrievalMetrics.rerankerUsed,
+                  ...(bundle.retrievalMetrics.rerankerFallbackReason ===
+                  undefined
+                    ? {}
+                    : {
+                        rerankerFallbackReason:
+                          bundle.retrievalMetrics.rerankerFallbackReason,
+                      }),
+                  ...(bundle.retrievalMetrics.rerankerLatencyMs === undefined
+                    ? {}
+                    : {
+                        rerankerLatencyMs:
+                          bundle.retrievalMetrics.rerankerLatencyMs,
+                      }),
+                  ...(bundle.retrievalMetrics.rerankerModelVersion === undefined
+                    ? {}
+                    : {
+                        rerankerModelVersion:
+                          bundle.retrievalMetrics.rerankerModelVersion,
+                      }),
+                  ...(bundle.retrievalMetrics.retrievalConfigVersion ===
+                  undefined
+                    ? {}
+                    : {
+                        retrievalConfigVersion:
+                          bundle.retrievalMetrics.retrievalConfigVersion,
+                      }),
                 }),
           });
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from numbers import Real
 from typing import Any
@@ -15,6 +16,7 @@ from .types import (
     GroundingBundle,
     GroundingPassage,
     InsufficientEvidenceBundle,
+    RerankerFallbackReason,
     RetrievalMetrics,
     UnavailableBundle,
 )
@@ -55,15 +57,26 @@ def _escape_xml(value: str) -> str:
 
 
 def _format_passage(passage: GroundingPassage) -> str:
+    source_version = (
+        f' source-version="{_escape_xml(passage.source_version)}"'
+        if passage.source_version is not None
+        else ""
+    )
     section = (
         f' section="{_escape_xml(passage.section)}"'
         if passage.section is not None
         else ""
     )
+    parent_id = (
+        f' parent-id="{_escape_xml(passage.parent_id)}"'
+        if passage.parent_id is not None
+        else ""
+    )
     return (
         f'<passage id="{_escape_xml(passage.id)}" '
-        f'source="{_escape_xml(passage.source)}" '
-        f'title="{_escape_xml(passage.title)}"{section}>\n'
+        f'source="{_escape_xml(passage.source)}"'
+        f"{source_version} "
+        f'title="{_escape_xml(passage.title)}"{section}{parent_id}>\n'
         f"{_escape_xml(passage.text)}\n</passage>"
     )
 
@@ -74,10 +87,11 @@ def _add_parent_context(passage: GroundingPassage) -> GroundingPassage:
         id=passage.id,
         source=passage.source,
         title=passage.title,
+        source_version=passage.source_version,
         section=passage.section,
+        parent_id=passage.parent_id,
         text=f"{passage.parent_text}\n\n{passage.text}",
         score=passage.score,
-        parent_id=passage.parent_id,
         parent_text=passage.parent_text,
     )
 
@@ -195,12 +209,21 @@ class PineconeRetriever:
 
         candidate_count = len(candidates)
         reranker_used = False
+        reranker_fallback_reason: RerankerFallbackReason | None = (
+            None if config.RAG_RERANKER_ENABLED else "disabled"
+        )
+        reranker_latency_ms = 0.0
+        reranker_model_version = (
+            "lexical-v1" if config.RAG_RERANKER_ENABLED else None
+        )
+        retrieval_config_version = "rag-v1"
 
         if config.RAG_RERANKER_ENABLED:
             dense_candidates = candidates
             rerank_candidates = dense_candidates[
                 : config.RAG_RERANKER_MAX_CANDIDATES
             ]
+            reranker_started_at = time.perf_counter()
             try:
                 reranked = await asyncio.wait_for(
                     self._off_loop(
@@ -211,6 +234,9 @@ class PineconeRetriever:
                     ),
                     timeout=config.RAG_RERANKER_TIMEOUT_MS / 1000,
                 )
+                reranker_latency_ms = (
+                    time.perf_counter() - reranker_started_at
+                ) * 1000
                 if _is_valid_reranked(
                     rerank_candidates,
                     reranked,
@@ -218,9 +244,21 @@ class PineconeRetriever:
                 ):
                     candidates = reranked
                     reranker_used = True
-            except Exception:
+                else:
+                    reranker_fallback_reason = "invalid-output"
+                    candidates = dense_candidates
+            except asyncio.TimeoutError:
+                reranker_latency_ms = (
+                    time.perf_counter() - reranker_started_at
+                ) * 1000
+                reranker_fallback_reason = "timeout"
                 candidates = dense_candidates
-
+            except Exception:
+                reranker_latency_ms = (
+                    time.perf_counter() - reranker_started_at
+                ) * 1000
+                reranker_fallback_reason = "unavailable"
+                candidates = dense_candidates
         selected = self._select_passages(
             candidates, preserve_order=reranker_used
         )
@@ -232,6 +270,10 @@ class PineconeRetriever:
                     accepted_count=0,
                     hierarchy_expansion=config.RAG_HIERARCHY_EXPANSION,
                     reranker_used=reranker_used,
+                    reranker_fallback_reason=reranker_fallback_reason,
+                    reranker_latency_ms=reranker_latency_ms,
+                    reranker_model_version=reranker_model_version,
+                    retrieval_config_version=retrieval_config_version,
                 ),
             )
 
@@ -246,7 +288,9 @@ class PineconeRetriever:
                     id=passage.id,
                     source=passage.source,
                     title=passage.title,
+                    source_version=passage.source_version,
                     section=passage.section,
+                    parent_id=passage.parent_id,
                 )
                 for passage in passages
             ],
@@ -256,6 +300,10 @@ class PineconeRetriever:
                 accepted_count=len(passages),
                 hierarchy_expansion=config.RAG_HIERARCHY_EXPANSION,
                 reranker_used=reranker_used,
+                reranker_fallback_reason=reranker_fallback_reason,
+                reranker_latency_ms=reranker_latency_ms,
+                reranker_model_version=reranker_model_version,
+                retrieval_config_version=retrieval_config_version,
             ),
         )
 
@@ -279,7 +327,13 @@ class PineconeRetriever:
             parameters={"input_type": "query", "truncate": "END"},
         )
         data = _value(result, "data", result)
-        first = data[0] if isinstance(data, Sequence) and not isinstance(data, (str, bytes)) and data else None
+        first = (
+            data[0]
+            if isinstance(data, Sequence)
+            and not isinstance(data, (str, bytes))
+            and data
+            else None
+        )
         values = _value(first, "values")
         if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
             raise ValueError("Pinecone embedding response is missing vector values")
@@ -309,8 +363,6 @@ class PineconeRetriever:
         matches = _value(result, "matches", ())
         if isinstance(matches, Sequence) and not isinstance(matches, (str, bytes)):
             return matches
-        return ()
-
     def _passages(self, result: object) -> list[GroundingPassage]:
         revision = self.settings.PINECONE_CORPUS_REVISION
         passages: list[GroundingPassage] = []
@@ -323,14 +375,29 @@ class PineconeRetriever:
 
             text = _non_empty_string(metadata.get("text"))
             source = _non_empty_string(metadata.get("source"))
+            raw_source_id = metadata.get("sourceId")
+            source_id = _non_empty_string(raw_source_id)
+            source_version = _non_empty_string(metadata.get("sourceVersion"))
             title = _non_empty_string(metadata.get("title"))
             corpus_revision = _non_empty_string(metadata.get("corpusRevision"))
+            section = _non_empty_string(metadata.get("section"))
+            parent_id = _non_empty_string(metadata.get("parentId"))
+            parent_text = _non_empty_string(metadata.get("parentText"))
             if (
                 text is None
                 or source is None
+                or source_version is None
                 or title is None
                 or corpus_revision is None
                 or corpus_revision != revision
+                or (
+                    raw_source_id is not None
+                    and (source_id is None or source_id != source)
+                )
+                or (
+                    self.settings.RAG_HIERARCHY_EXPANSION
+                    and (section is None or parent_id is None or parent_text is None)
+                )
             ):
                 continue
 
@@ -347,17 +414,16 @@ class PineconeRetriever:
                 malformed_score = True
                 continue
 
-            section = _non_empty_string(metadata.get("section"))
-            parent_id = _non_empty_string(metadata.get("parentId"))
-            parent_text = _non_empty_string(metadata.get("parentText"))
             passages.append(
                 GroundingPassage(
                     id=match_id,
                     source=source,
                     title=title,
+                    source_version=source_version,
+                    section=section,
+                    parent_id=parent_id,
                     text=text,
                     score=score_float,
-                    parent_id=parent_id,
                     parent_text=parent_text,
                 )
             )

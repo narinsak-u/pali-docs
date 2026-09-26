@@ -24,6 +24,7 @@ from app.rag.types import (
     GroundingBundle,
     GroundingPassage,
     InsufficientEvidenceBundle,
+    RetrievalMetrics,
 )
 
 
@@ -97,7 +98,14 @@ def turn(run_id: str = "run-1") -> AgentTurnInput:
 
 
 def grounded_bundle() -> GroundedBundle:
-    citation = Citation(id="p-1", source="book-1", title="Chapter 1", section="§1")
+    citation = Citation(
+        id="p-1",
+        source="book-1",
+        title="Chapter 1",
+        source_version="source-version-1",
+        section="§1",
+        parent_id="parent-1",
+    )
     return GroundedBundle(
         status="grounded",
         query="passage",
@@ -107,13 +115,25 @@ def grounded_bundle() -> GroundedBundle:
                 id=citation.id,
                 source=citation.source,
                 title=citation.title,
+                source_version=citation.source_version,
                 section=citation.section,
+                parent_id=citation.parent_id,
                 text="Evidence.",
                 score=0.9,
             )
         ],
         citations=[citation],
         context="<retrieved-passages><passage id=\"p-1\">Evidence.</passage></retrieved-passages>",
+        retrieval_metrics=RetrievalMetrics(
+            candidate_count=1,
+            accepted_count=1,
+            hierarchy_expansion=True,
+            reranker_used=True,
+            reranker_fallback_reason="invalid-output",
+            reranker_latency_ms=12.5,
+            reranker_model_version="lexical-v1",
+            retrieval_config_version="rag-v1",
+        ),
     )
 
 
@@ -225,3 +245,32 @@ async def test_valid_citations_answer_and_emit_monotonic_v1_envelopes() -> None:
         if envelope["eventType"] == "retrieval.completed"
     )
     assert retrieval_completed["payload"]["acceptedSourceIds"] == ["book-1"]
+    assert retrieval_completed["payload"]["acceptedProvenance"] == [
+        {
+            "id": "p-1",
+            "source": "book-1",
+            "title": "Chapter 1",
+            "sourceVersion": "source-version-1",
+            "section": "§1",
+            "parentId": "parent-1",
+        }
+    ]
+    assert retrieval_completed["payload"]["rerankerFallbackReason"] == "invalid-output"
+    assert retrieval_completed["payload"]["rerankerLatencyMs"] == 12.5
+    assert retrieval_completed["payload"]["rerankerModelVersion"] == "lexical-v1"
+    assert retrieval_completed["payload"]["retrievalConfigVersion"] == "rag-v1"
+    citations_completed = next(
+        envelope
+        for envelope in envelopes
+        if envelope["eventType"] == "citations.completed"
+    )
+    assert citations_completed["payload"]["citations"] == [
+        {
+            "id": "p-1",
+            "source": "book-1",
+            "sourceVersion": "source-version-1",
+            "title": "Chapter 1",
+            "section": "§1",
+            "parentId": "parent-1",
+        }
+    ]

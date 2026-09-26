@@ -1,4 +1,4 @@
-import type { Citation } from "@/lib/rag/types";
+import type { Citation, RerankerFallbackReason } from "@/lib/rag/types";
 import type { SafeQuestionRequest } from "@/lib/schemas/question-request";
 
 export type AgentTurnOutcome =
@@ -38,10 +38,15 @@ export type AgentEvent =
       attempt: number;
       matchCount: number;
       acceptedSourceIds?: string[];
+      acceptedProvenance?: Citation[];
       candidateCount?: number;
       acceptedCount?: number;
       hierarchyExpansion?: boolean;
       rerankerUsed?: boolean;
+      rerankerFallbackReason?: RerankerFallbackReason | null;
+      rerankerLatencyMs?: number;
+      rerankerModelVersion?: string;
+      retrievalConfigVersion?: string;
     }
   | { type: "retrieval.failed"; runId: string; code: string }
   | {

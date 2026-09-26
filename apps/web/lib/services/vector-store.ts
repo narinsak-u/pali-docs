@@ -27,14 +27,32 @@ export async function queryPinecone(
   let malformedScore = false;
   const passages = results.matches.flatMap((match): GroundingPassage[] => {
     const metadata = match.metadata;
+    const source = isNonEmptyString(metadata?.source) ? metadata.source : undefined;
+    const sourceVersion = isNonEmptyString(metadata?.sourceVersion)
+      ? metadata.sourceVersion
+      : undefined;
+    const section = isNonEmptyString(metadata?.section)
+      ? metadata.section
+      : undefined;
+    const parentId = isNonEmptyString(metadata?.parentId)
+      ? metadata.parentId
+      : undefined;
+    const parentText = isNonEmptyString(metadata?.parentText)
+      ? metadata.parentText
+      : undefined;
     if (
       !isNonEmptyString(match.id) ||
       !metadata ||
       !isNonEmptyString(metadata.text) ||
-      !isNonEmptyString(metadata.source) ||
+      source === undefined ||
+      sourceVersion === undefined ||
       !isNonEmptyString(metadata.title) ||
       !isNonEmptyString(metadata.corpusRevision) ||
-      metadata.corpusRevision !== config.PINECONE_CORPUS_REVISION
+      metadata.corpusRevision !== config.PINECONE_CORPUS_REVISION ||
+      (metadata.sourceId !== undefined &&
+        (!isNonEmptyString(metadata.sourceId) || metadata.sourceId !== source)) ||
+      (config.RAG_HIERARCHY_EXPANSION === true &&
+        (section === undefined || parentId === undefined || parentText === undefined))
     ) {
       return [];
     }
@@ -47,21 +65,13 @@ export async function queryPinecone(
       return [];
     }
 
-    const section = isNonEmptyString(metadata.section)
-      ? metadata.section
-      : undefined;
-    const parentId = isNonEmptyString(metadata.parentId)
-      ? metadata.parentId
-      : undefined;
-    const parentText = isNonEmptyString(metadata.parentText)
-      ? metadata.parentText
-      : undefined;
     return [
       {
         id: match.id,
         score: match.score,
         text: metadata.text,
-        source: metadata.source,
+        source,
+        sourceVersion,
         title: metadata.title,
         ...(section === undefined ? {} : { section }),
         ...(parentId === undefined ? {} : { parentId }),

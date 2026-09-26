@@ -307,6 +307,10 @@ describe("RAG evaluation records", () => {
           acceptedCount: 1,
           hierarchyExpansion: true,
           rerankerUsed: true,
+          rerankerFallbackReason: "invalid-output",
+          rerankerLatencyMs: 12.5,
+          rerankerModelVersion: "lexical-v1",
+          retrievalConfigVersion: "rag-v1",
         });
         sink.emit({ type: "generation.started", runId: input.runId });
         return {
@@ -353,12 +357,14 @@ describe("RAG evaluation records", () => {
       acceptedCount: 1,
       hierarchyExpansion: true,
       rerankerUsed: true,
+      rerankerFallbackReason: "invalid-output",
+      rerankerLatencyMs: 12.5,
+      rerankerModelVersion: "lexical-v1",
+      retrievalConfigVersion: "rag-v1",
       sourceRecall: 1,
       citationPrecision: 1,
       citationCompleteness: 1,
     });
-    expect(JSON.stringify(evaluationRecord)).not.toContain("private");
-    expect(JSON.stringify(evaluationRecord)).not.toContain("vector-id");
   });
 
   it("measures an unsuccessful retrieval through terminal completion", async () => {

@@ -45,6 +45,7 @@ describe("queryPinecone", () => {
           metadata: {
             text: "text A",
             source: "part-1/chapter-1",
+            sourceVersion: "source-version-a",
             title: "บทที่ 1",
             corpusRevision: "corpus-2026-09-18",
             section: "section-a",
@@ -57,6 +58,7 @@ describe("queryPinecone", () => {
           metadata: {
             text: "text B",
             source: "part-1/chapter-2",
+            sourceVersion: "source-version-b",
             title: "บทที่ 2",
             corpusRevision: "corpus-2026-09-18",
             section: 42,
@@ -74,6 +76,7 @@ describe("queryPinecone", () => {
         score: 0.95,
         text: "text A",
         source: "part-1/chapter-1",
+        sourceVersion: "source-version-a",
         title: "บทที่ 1",
         section: "section-a",
       },
@@ -82,9 +85,29 @@ describe("queryPinecone", () => {
         score: 0.85,
         text: "text B",
         source: "part-1/chapter-2",
+        sourceVersion: "source-version-b",
         title: "บทที่ 2",
       },
     ]);
+  });
+  it("rejects a match with missing source version metadata", async () => {
+    const mockQuery = vi.fn().mockResolvedValue({
+      matches: [
+        {
+          id: "missing-version",
+          score: 0.9,
+          metadata: {
+            text: "text",
+            source: "part-1/chapter-1",
+            title: "บทที่ 1",
+            corpusRevision: "corpus-2026-09-18",
+          },
+        },
+      ],
+    });
+    mockedNamespace.mockReturnValue({ query: mockQuery });
+
+    await expect(queryPinecone([0.1], 5)).resolves.toEqual([]);
   });
   it("rejects a response containing only malformed scores as unavailable", async () => {
     const mockQuery = vi.fn().mockResolvedValue({
@@ -95,6 +118,7 @@ describe("queryPinecone", () => {
           metadata: {
             text: "invalid score",
             source: "part-1/chapter-1",
+            sourceVersion: "source-version-a",
             title: "บทที่ 1",
             corpusRevision: "corpus-2026-09-18",
           },
@@ -118,6 +142,7 @@ describe("queryPinecone", () => {
           metadata: {
             text: "matching text",
             source: "part-1/chapter-1",
+            sourceVersion: "source-version-a",
             title: "บทที่ 1",
             corpusRevision: "corpus-2026-09-18",
           },
@@ -151,6 +176,7 @@ describe("queryPinecone", () => {
         score: 0.95,
         text: "matching text",
         source: "part-1/chapter-1",
+        sourceVersion: "source-version-a",
         title: "บทที่ 1",
       },
     ]);

@@ -38,12 +38,51 @@ const retrievalCompletedPayloadSchema = z
     attempt: z.number().int().positive(),
     matchCount: z.number().int().nonnegative(),
     acceptedSourceIds: z.array(z.string().min(1)).optional(),
+    acceptedProvenance: z.array(citationSchema).max(12).optional(),
     candidateCount: z.number().int().nonnegative().optional(),
     acceptedCount: z.number().int().nonnegative().optional(),
     hierarchyExpansion: z.boolean().optional(),
     rerankerUsed: z.boolean().optional(),
+    rerankerFallbackReason: z
+      .enum(["disabled", "timeout", "unavailable", "invalid-output", "cancelled"])
+      .nullable()
+      .optional(),
+    rerankerLatencyMs: z.number().nonnegative().optional(),
+    rerankerModelVersion: z.string().min(1).optional(),
+    retrievalConfigVersion: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((payload, context) => {
+    if (payload.rerankerUsed !== true) return;
+    if (payload.rerankerFallbackReason !== null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["rerankerFallbackReason"],
+        message: "successful reranker events must include a null fallback reason",
+      });
+    }
+    if (payload.rerankerLatencyMs === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["rerankerLatencyMs"],
+        message: "reranker latency is required when reranking succeeds",
+      });
+    }
+    if (payload.rerankerModelVersion === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["rerankerModelVersion"],
+        message: "reranker model version is required when reranking succeeds",
+      });
+    }
+    if (payload.retrievalConfigVersion === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["retrievalConfigVersion"],
+        message: "retrieval configuration version is required when reranking succeeds",
+      });
+    }
+  });
 const codePayloadSchema = z.object({ runId: z.string().min(1), code: z.string().min(1) }).strict();
 const rewrittenPayloadSchema = z
   .object({ runId: z.string().min(1), attempt: z.number().int().positive(), query: z.string().min(1) })
@@ -58,8 +97,10 @@ const citationPayloadSchema = z
           .object({
             id: z.string().min(1),
             source: z.string().min(1),
+            sourceVersion: z.string().min(1).nullable().optional(),
             title: z.string().min(1),
-            section: z.string().nullable().optional(),
+            section: z.string().min(1).nullable().optional(),
+            parentId: z.string().min(1).nullable().optional(),
           })
           .strict(),
       )
@@ -106,6 +147,9 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
         ...(payload.acceptedSourceIds === undefined
           ? {}
           : { acceptedSourceIds: payload.acceptedSourceIds }),
+        ...(payload.acceptedProvenance === undefined
+          ? {}
+          : { acceptedProvenance: payload.acceptedProvenance }),
         ...(payload.candidateCount === undefined
           ? {}
           : { candidateCount: payload.candidateCount }),
@@ -118,6 +162,18 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
         ...(payload.rerankerUsed === undefined
           ? {}
           : { rerankerUsed: payload.rerankerUsed }),
+        ...(payload.rerankerFallbackReason === undefined
+          ? {}
+          : { rerankerFallbackReason: payload.rerankerFallbackReason }),
+        ...(payload.rerankerLatencyMs === undefined
+          ? {}
+          : { rerankerLatencyMs: payload.rerankerLatencyMs }),
+        ...(payload.rerankerModelVersion === undefined
+          ? {}
+          : { rerankerModelVersion: payload.rerankerModelVersion }),
+        ...(payload.retrievalConfigVersion === undefined
+          ? {}
+          : { retrievalConfigVersion: payload.retrievalConfigVersion }),
       };
     }
     case "retrieval.failed": {
@@ -137,8 +193,14 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
       return {
         type: envelope.eventType,
         runId: envelope.runId,
-        citations: payload.citations.map(({ section, ...citation }) =>
-          citationSchema.parse(section === undefined || section === null ? citation : { ...citation, section }),
+        citations: payload.citations.map(
+          ({ section, sourceVersion, parentId, ...citation }) =>
+            citationSchema.parse({
+              ...citation,
+              ...(sourceVersion == null ? {} : { sourceVersion }),
+              ...(section == null ? {} : { section }),
+              ...(parentId == null ? {} : { parentId }),
+            }),
         ),
       };
     }

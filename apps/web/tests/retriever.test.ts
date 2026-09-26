@@ -107,6 +107,36 @@ describe("retrieve", () => {
       passages: [matching],
     });
   });
+  it("preserves source and hierarchy provenance in accepted citations and context", async () => {
+    const matching = passage("matching", 0.9, {
+      sourceVersion: "source-version-a",
+      section: "section-a",
+      parentId: "parent-a",
+      parentText: "parent context",
+    } as Partial<GroundingPassage>);
+    mockedQuery.mockResolvedValue([matching]);
+
+    const result = await retrieve({ query: "dhamma", attempt: 0 });
+
+    expect(result).toMatchObject({
+      status: "grounded",
+      citations: [
+        {
+          id: "matching",
+          source: "part-1/matching",
+          sourceVersion: "source-version-a",
+          section: "section-a",
+          parentId: "parent-a",
+        },
+      ],
+    });
+    expect(result.status === "grounded" && result.context).toContain(
+      'source-version="source-version-a"',
+    );
+    expect(result.status === "grounded" && result.context).toContain(
+      'parent-id="parent-a"',
+    );
+  });
 
   it("expands accepted children with the same parent when enabled", async () => {
     Object.assign(mockedConfig, {
@@ -153,6 +183,41 @@ describe("retrieve", () => {
       "term-match",
       "score-first",
     ]);
+  });
+  it("records reranker fallback reason and versioned timing dimensions", async () => {
+    Object.assign(mockedConfig, {
+      RAG_RERANKER_ENABLED: true,
+      RAG_RERANKER_TIMEOUT_MS: 1,
+    });
+    mockedQuery.mockResolvedValue([
+      passage("term-match", 0.7, { text: "dhamma grammar" }),
+      passage("score-first", 0.9, { text: "grammar lesson" }),
+    ]);
+    const rerankCandidates = vi.fn(
+      () => new Promise<GroundingPassage[]>(() => undefined),
+    );
+
+    const result = await retrieve(
+      { query: "dhamma", attempt: 0 },
+      undefined,
+      { rerankCandidates },
+    );
+
+    expect(
+      result.status === "grounded" || result.status === "insufficient-evidence"
+        ? result.retrievalMetrics
+        : undefined,
+    ).toMatchObject({
+      rerankerUsed: false,
+      rerankerFallbackReason: "timeout",
+      rerankerModelVersion: "lexical-v1",
+      retrievalConfigVersion: "rag-v1",
+    });
+    expect(
+      result.status === "grounded" || result.status === "insufficient-evidence"
+        ? result.retrievalMetrics?.rerankerLatencyMs
+        : undefined,
+    ).toBeGreaterThanOrEqual(0);
   });
 
 
@@ -357,6 +422,9 @@ describe("retrieve", () => {
         acceptedCount: 0,
         hierarchyExpansion: false,
         rerankerUsed: false,
+        rerankerFallbackReason: "disabled",
+        rerankerLatencyMs: 0,
+        retrievalConfigVersion: "rag-v1",
       },
     });
   });

@@ -6,22 +6,33 @@ export interface RetrievalRequest {
 export interface Citation {
   id: string;
   source: string;
+  sourceVersion?: string;
   title: string;
   section?: string;
+  parentId?: string;
 }
 
 export interface GroundingPassage extends Citation {
   text: string;
   score: number;
-  parentId?: string;
   parentText?: string;
 }
+export type RerankerFallbackReason =
+  | "disabled"
+  | "timeout"
+  | "unavailable"
+  | "invalid-output"
+  | "cancelled";
 
 export interface RetrievalMetrics {
   candidateCount: number;
   acceptedCount: number;
   hierarchyExpansion: boolean;
   rerankerUsed: boolean;
+  rerankerFallbackReason?: RerankerFallbackReason | null;
+  rerankerLatencyMs?: number;
+  rerankerModelVersion?: string;
+  retrievalConfigVersion?: string;
 }
 
 export type GroundingBundle =

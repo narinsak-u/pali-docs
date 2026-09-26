@@ -24,8 +24,10 @@ export const citationSchema = z
   .object({
     id: z.string().min(1),
     source: z.string().min(1),
+    sourceVersion: z.string().min(1).optional(),
     title: z.string().min(1),
     section: z.string().min(1).optional(),
+    parentId: z.string().min(1).optional(),
   })
   .strict();
 

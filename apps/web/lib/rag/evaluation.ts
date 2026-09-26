@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { RerankerFallbackReason } from "@/lib/rag/types";
 
 export type RagExpectedOutcome = "grounded" | "insufficient-evidence";
 export type RagEvaluationCategory =
@@ -50,6 +51,10 @@ export interface RagEvaluationRecord {
   acceptedCount?: number;
   hierarchyExpansion?: boolean;
   rerankerUsed?: boolean;
+  rerankerFallbackReason?: RerankerFallbackReason | null;
+  rerankerLatencyMs?: number;
+  rerankerModelVersion?: string;
+  retrievalConfigVersion?: string;
   sourceRecall: number;
   citationPrecision: number;
   citationCompleteness: number;
