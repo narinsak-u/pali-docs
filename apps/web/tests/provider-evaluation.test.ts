@@ -20,8 +20,8 @@ const evaluationCase: EvaluationCase = {
   expectedOutcome: "grounded",
   expectedSourceIds: ["source-1"],
   forbiddenSourceIds: ["secret-source"],
+  accessScope: { tenant: "tenant-1", role: "learner" },
 };
-
 const thresholds: EvaluationThresholds = {
   minOutcomeAccuracy: 1,
   minGroundingRecall: 1,
@@ -30,15 +30,26 @@ const thresholds: EvaluationThresholds = {
   maxLatencyP95Ms: 200,
   maxFailureRate: 0,
   maxCancellationRate: 0,
+  maxToolFailureRate: 0,
   maxCost: 1,
 };
 
 function runnerFor(
   answer: string,
-  options: { source?: string; toolFailure?: string; failure?: string; outcome?: "insufficient-evidence" } = {},
+  options: {
+    source?: string | string[];
+    toolFailure?: string;
+    failure?: string;
+    outcome?: "insufficient-evidence";
+  } = {},
 ): AgentTurnRunner {
   return {
     async runTurn(input: AgentTurnInput, sink) {
+      const sourceIds = options.source
+        ? Array.isArray(options.source)
+          ? options.source
+          : [options.source]
+        : [];
       sink.emit({ type: "run.started", runId: input.runId });
       sink.emit({
         type: "retrieval.started",
@@ -51,9 +62,9 @@ function runnerFor(
         runId: input.runId,
         attempt: 1,
         matchCount: 2,
-        acceptedSourceIds: options.source ? [options.source] : [],
+        acceptedSourceIds: sourceIds,
         candidateCount: 2,
-        acceptedCount: options.source ? 1 : 0,
+        acceptedCount: sourceIds.length,
       });
       sink.emit({ type: "generation.started", runId: input.runId });
       if (options.toolFailure) {
@@ -75,16 +86,23 @@ function runnerFor(
         return { outcome: "failed", code: options.failure };
       }
       if (options.outcome) {
-        sink.emit({ type: "run.completed", runId: input.runId, outcome: options.outcome });
+        sink.emit({
+          type: "run.completed",
+          runId: input.runId,
+          outcome: options.outcome,
+          cost: 0.1,
+        } as AgentEvent);
         return { outcome: options.outcome };
       }
       sink.emit({ type: "answer.completed", runId: input.runId, text: answer });
       sink.emit({
         type: "citations.completed",
         runId: input.runId,
-        citations: options.source
-          ? [{ id: "passage-secret", source: options.source, title: "private passage" }]
-          : [],
+        citations: sourceIds.map((source) => ({
+          id: "passage-secret",
+          source,
+          title: "private passage",
+        })),
       });
       sink.emit({
         type: "run.completed",
@@ -95,9 +113,11 @@ function runnerFor(
       return {
         outcome: "answered",
         answer,
-        citations: options.source
-          ? [{ id: "passage-secret", source: options.source, title: "private passage" }]
-          : [],
+        citations: sourceIds.map((source) => ({
+          id: "passage-secret",
+          source,
+          title: "private passage",
+        })),
         suggestions: [],
       };
     },
@@ -147,6 +167,9 @@ describe("provider evaluation traces", () => {
     expect(paired.hosted.inputDigest).toBe(paired.local.inputDigest);
     expect(paired.hosted.runId).toMatch(/^hosted-eval-unicode-grounded-/);
     expect(paired.local.runId).toMatch(/^local-eval-unicode-grounded-/);
+    expect(inputs[0].accessScope).toEqual(inputs[1].accessScope);
+    expect(inputs[0].accessScope).toEqual({ tenant: "tenant-1", role: "learner" });
+    expect(paired.hosted.accessScopeDigest).toBe(paired.local.accessScopeDigest);
 
     const serialized = JSON.stringify(paired);
     for (const secret of [
@@ -225,23 +248,67 @@ describe("provider comparison and promotion gates", () => {
   });
 
   it("requires matching authoritative artifacts before allowing a passing candidate", async () => {
-    const reviewedCaseList = Array.from({ length: 30 }, (_, index) => ({
+    const cohortPlan = [
+      ...Array.from({ length: 10 }, () => ["thai-single-source", "th", "grounded"] as const),
+      ...Array.from({ length: 5 }, () => ["english-single-source", "en", "grounded"] as const),
+      ...Array.from({ length: 5 }, () => ["multi-source", "en", "grounded"] as const),
+      ...Array.from({ length: 5 }, () => ["paraphrase-terminology", "en", "grounded"] as const),
+      ...Array.from({ length: 3 }, () => ["insufficient-evidence", "en", "insufficient-evidence"] as const),
+      ...Array.from({ length: 2 }, () => ["retrieved-prompt-injection", "en", "grounded"] as const),
+    ];
+    const reviewedCaseList = cohortPlan.map(([category, language, expectedOutcome], index) => ({
       ...evaluationCase,
       id: `reviewed-${index}`,
+      category,
+      language,
+      expectedOutcome,
+      expectedSourceIds:
+        expectedOutcome === "insufficient-evidence"
+          ? []
+          : category === "multi-source"
+            ? ["source-1", "source-2"]
+            : ["source-1"],
     }));
+    const passingThresholds = {
+      ...thresholds,
+      minGroundingRecall: 0.5,
+      minCitationCompleteness: 0.5,
+    };
     const paired = await Promise.all(
       reviewedCaseList.map((reviewedCase) =>
         runPairedEvaluationCase({
           evaluationCase: reviewedCase,
-          hosted: runnerFor("answer", { source: "source-1" }),
-          local: runnerFor("answer", { source: "source-1" }),
+          hosted: runnerFor("answer", {
+            source:
+              reviewedCase.expectedOutcome === "insufficient-evidence"
+                ? undefined
+                : reviewedCase.category === "multi-source"
+                  ? ["source-1", "source-2"]
+                  : "source-1",
+            outcome:
+              reviewedCase.expectedOutcome === "insufficient-evidence"
+                ? "insufficient-evidence"
+                : undefined,
+          }),
+          local: runnerFor("answer", {
+            source:
+              reviewedCase.expectedOutcome === "insufficient-evidence"
+                ? undefined
+                : reviewedCase.category === "multi-source"
+                  ? ["source-1", "source-2"]
+                  : "source-1",
+            outcome:
+              reviewedCase.expectedOutcome === "insufficient-evidence"
+                ? "insufficient-evidence"
+                : undefined,
+          }),
           hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
           localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
           corpusRevision: "corpus-1",
         }),
       ),
     );
-    const comparison = compareProviderEvaluations(paired, thresholds);
+    const comparison = compareProviderEvaluations(paired, passingThresholds);
     const reviewedCases = {
       artifactType: "ReviewedEvaluationCases",
       schemaVersion: 1,
@@ -255,8 +322,8 @@ describe("provider comparison and promotion gates", () => {
       authoritative: true,
       artifactId: "baseline-2026-09-01",
       corpusRevision: "corpus-1",
-      thresholds,
       provider: "hosted",
+      thresholds: passingThresholds,
     } as const;
 
     expect(
@@ -275,5 +342,84 @@ describe("provider comparison and promotion gates", () => {
         rollbackReady: true,
       }).promote,
     ).toBe(false);
+  });
+  it("rejects paired case, scope, and citation identity mismatches", async () => {
+    const paired = await runPairedEvaluationCase({
+      evaluationCase,
+      hosted: runnerFor("answer", { source: "source-1" }),
+      local: runnerFor("answer", { source: "source-1" }),
+      hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
+      localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
+      corpusRevision: "corpus-1",
+    });
+    expect(() =>
+      compareProviderEvaluations(
+        [{ ...paired, local: { ...paired.local, caseId: "other-case" } }],
+        thresholds,
+      ),
+    ).toThrow("case identity");
+    expect(() =>
+      compareProviderEvaluations(
+        [{ ...paired, local: { ...paired.local, accessScopeDigest: "different" } }],
+        thresholds,
+      ),
+    ).toThrow("AccessScope");
+
+    const forbiddenCase = { ...evaluationCase, forbiddenSourceIds: ["source-1"] };
+    const forbidden = await runPairedEvaluationCase({
+      evaluationCase: forbiddenCase,
+      hosted: runnerFor("answer", { source: "source-1" }),
+      local: runnerFor("answer", { source: "source-1" }),
+      hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
+      localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
+      corpusRevision: "corpus-1",
+    });
+    const comparison = compareProviderEvaluations([forbidden], thresholds);
+    expect(
+      comparison.gates.local.violations.some((violation) =>
+        violation.includes("citation safety"),
+      ),
+    ).toBe(true);
+  });
+  it("fails cost and tool gates when telemetry is absent", async () => {
+    const noTelemetryRunner: AgentTurnRunner = {
+      async runTurn(input, sink) {
+        sink.emit({ type: "run.started", runId: input.runId });
+        sink.emit({
+          type: "retrieval.completed",
+          runId: input.runId,
+          attempt: 1,
+          matchCount: 1,
+          acceptedSourceIds: ["source-1"],
+          candidateCount: 1,
+          acceptedCount: 1,
+        });
+        sink.emit({ type: "answer.completed", runId: input.runId, text: "answer" });
+        sink.emit({
+          type: "citations.completed",
+          runId: input.runId,
+          citations: [{ id: "p-1", source: "source-1", title: "source" }],
+        });
+        sink.emit({ type: "run.completed", runId: input.runId, outcome: "answered" });
+        return {
+          outcome: "answered",
+          answer: "answer",
+          citations: [{ id: "p-1", source: "source-1", title: "source" }],
+          suggestions: [],
+        };
+      },
+    };
+    const paired = await runPairedEvaluationCase({
+      evaluationCase,
+      hosted: noTelemetryRunner,
+      local: noTelemetryRunner,
+      hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
+      localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
+      corpusRevision: "corpus-1",
+    });
+    const comparison = compareProviderEvaluations([paired], thresholds);
+    expect(comparison.gates.local.violations).toEqual(
+      expect.arrayContaining(["local cost telemetry is incomplete", "local tool telemetry is incomplete"]),
+    );
   });
 });

@@ -15,7 +15,10 @@ import {
 } from "@/lib/rag/evaluation";
 import { z } from "zod";
 
-export type EvaluationCase = RagEvaluationCase;
+export interface EvaluationCase extends Omit<RagEvaluationCase, "forbiddenSourceIds"> {
+  forbiddenSourceIds?: string[];
+  accessScope?: Record<string, unknown>;
+}
 export type EvaluationProvider = "hosted" | "local";
 
 export interface ServingMetadata {
@@ -39,13 +42,14 @@ export interface EvaluationThresholds {
   maxCost?: number;
   maxToolFailureRate?: number;
 }
-
 export interface ProviderTrace {
   schemaVersion: "v1";
   caseId: string;
   provider: EvaluationProvider;
   runId: string;
   inputDigest: string;
+  accessScopeDigest: string;
+  accessScope?: Record<string, string | number | boolean | string[]>;
   corpusRevision: string;
   model: string;
   servingRevision: string;
@@ -56,6 +60,8 @@ export interface ProviderTrace {
   outcome: RagActualOutcome;
   grounding: {
     corpusRevision: string;
+    expectedSourceIds: string[];
+    forbiddenSourceIds: string[];
     retrievedSourceIds: string[];
     sourceRecall: number;
   };
@@ -63,6 +69,7 @@ export interface ProviderTrace {
     sourceIds: string[];
     precision: number;
     completeness: number;
+    violations: string[];
   };
   quality: {
     outcomeCorrect: boolean;
@@ -93,6 +100,7 @@ export interface ProviderTrace {
     succeeded: number;
     failed: number;
   };
+  toolTelemetryPresent: boolean;
   failure?: string;
   cancelled?: boolean;
   cost?: number;
@@ -102,6 +110,7 @@ export interface PairedEvaluation {
   schemaVersion: "v1";
   caseId: string;
   inputDigest: string;
+  accessScopeDigest: string;
   corpusRevision: string;
   hosted: ProviderTrace;
   local: ProviderTrace;
@@ -117,7 +126,10 @@ export interface ProviderAggregate {
   failureRate: number;
   cancellationRate: number;
   averageCost: number | null;
+  costMeasurementCount: number;
   toolFailureRate: number;
+  toolTelemetryCount: number;
+  citationViolationCount: number;
 }
 
 export interface ProviderGateResult {
@@ -172,6 +184,7 @@ interface RunMetrics {
   cost?: number;
   capacity: ProviderTrace["capacity"];
   tools: ProviderTrace["tools"];
+  toolTelemetryPresent: boolean;
 }
 
 const SAFE_CODE: Record<string, true> = {
@@ -188,15 +201,47 @@ const SAFE_CODE: Record<string, true> = {
 function safeCode(value: unknown): string {
   return typeof value === "string" && SAFE_CODE[value] === true ? value : "unknown";
 }
-
 function safeId(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0 || value.length > 300) return undefined;
   return value;
 }
+type SafeAccessScope = Record<string, string | number | boolean | string[]>;
+type EvaluationTurnInput = AgentTurnInput & { accessScope?: SafeAccessScope };
 
-function canonicalInput(input: AgentTurnInput): AgentTurnInput {
+const SENSITIVE_SCOPE_KEY = /(?:token|secret|password|api.?key|credential)/i;
+
+function normalizeAccessScope(scope: Record<string, unknown> | undefined): SafeAccessScope {
+  if (!scope) return {};
+  const normalized: SafeAccessScope = {};
+  for (const key of Object.keys(scope).sort()) {
+    if (SENSITIVE_SCOPE_KEY.test(key)) continue;
+    const value = scope[key];
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      normalized[key] = value;
+    } else if (
+      Array.isArray(value) &&
+      value.every((entry): entry is string => typeof entry === "string")
+    ) {
+      normalized[key] = value.slice(0, 20);
+    }
+  }
+  return normalized;
+}
+
+function scopeDigest(scope: SafeAccessScope): string {
+  return createHash("sha256").update(JSON.stringify(scope)).digest("hex");
+}
+
+function canonicalInput(input: EvaluationTurnInput): EvaluationTurnInput {
   return {
     runId: "normalized",
+    ...(input.accessScope === undefined
+      ? {}
+      : { accessScope: normalizeAccessScope(input.accessScope) }),
     messages: input.messages.map((message) => ({
       ...message,
       parts: message.parts.map((part) => ({
@@ -207,10 +252,15 @@ function canonicalInput(input: AgentTurnInput): AgentTurnInput {
   };
 }
 
-function inputDigest(input: AgentTurnInput): string {
+function inputDigest(input: EvaluationTurnInput): string {
   const normalized = canonicalInput(input);
   return createHash("sha256")
-    .update(JSON.stringify({ messages: normalized.messages }))
+    .update(
+      JSON.stringify({
+        accessScope: normalized.accessScope ?? {},
+        messages: normalized.messages,
+      }),
+    )
     .digest("hex");
 }
 
@@ -305,6 +355,7 @@ function extractRunMetrics(): {
     generationMs: 0,
     capacity: {},
     tools: { attempted: 0, succeeded: 0, failed: 0 },
+    toolTelemetryPresent: false,
   };
   let generationStarted: number | undefined;
   const clock = () => performance.now();
@@ -365,13 +416,16 @@ function extractRunMetrics(): {
           if (typeof event.queueMs === "number") metrics.capacity.queueMs = event.queueMs;
           break;
         case "tool.started":
+          metrics.toolTelemetryPresent = true;
           metrics.tools.attempted += 1;
           break;
         case "tool.completed":
+          metrics.toolTelemetryPresent = true;
           metrics.tools.attempted += metrics.tools.attempted === 0 ? 1 : 0;
           metrics.tools.succeeded += 1;
           break;
         case "tool.failed":
+          metrics.toolTelemetryPresent = true;
           metrics.tools.attempted += metrics.tools.attempted === 0 ? 1 : 0;
           metrics.tools.failed += 1;
           break;
@@ -386,6 +440,19 @@ function extractRunMetrics(): {
   };
   return { metrics, sink };
 }
+function evaluationCaseInput(evaluationCase: EvaluationCase): EvaluationTurnInput {
+  return {
+    runId: "normalized",
+    accessScope: normalizeAccessScope(evaluationCase.accessScope),
+    messages: [
+      {
+        id: `evaluation-${evaluationCase.id}`,
+        role: "user",
+        parts: [{ type: "text", text: evaluationCase.question }],
+      },
+    ],
+  };
+}
 
 async function runProvider(
   provider: EvaluationProvider,
@@ -395,18 +462,9 @@ async function runProvider(
   corpusRevision: string,
   now: () => number,
 ): Promise<ProviderTrace> {
-  const baseInput: AgentTurnInput = {
-    runId: "normalized",
-    messages: [
-      {
-        id: `evaluation-${evaluationCase.id}`,
-        role: "user",
-        parts: [{ type: "text", text: evaluationCase.question }],
-      },
-    ],
-  };
-  const normalized = canonicalInput(baseInput);
+  const normalized = canonicalInput(evaluationCaseInput(evaluationCase));
   const digest = inputDigest(normalized);
+  const activeScopeDigest = scopeDigest(normalized.accessScope ?? {});
   const inputText = normalized.messages
     .flatMap((message) => message.parts.map((part) => part.text))
     .join("\n");
@@ -433,6 +491,16 @@ async function runProvider(
         : "unsupported-answer"
       : result.outcome;
   const outputUnicode = unicodeMetrics(metrics.answer ?? "");
+  const expectedSources = new Set(evaluationCase.expectedSourceIds);
+  const forbiddenSources = new Set(evaluationCase.forbiddenSourceIds ?? []);
+  const citationViolations = unique([
+    ...citationSources
+      .filter((source) => forbiddenSources.has(source))
+      .map((source) => `forbidden:${source}`),
+    ...citationSources
+      .filter((source) => !expectedSources.has(source))
+      .map((source) => `unknown:${source}`),
+  ]);
   const model = safeServingMetadata(metadata);
   const failure = metrics.failure ?? ("code" in result ? safeCode(result.code) : undefined);
   return {
@@ -441,11 +509,17 @@ async function runProvider(
     provider,
     runId: runId(provider, evaluationCase.id, digest),
     inputDigest: digest,
+    accessScopeDigest: activeScopeDigest,
+    ...(Object.keys(normalized.accessScope ?? {}).length === 0
+      ? {}
+      : { accessScope: normalized.accessScope }),
     corpusRevision,
     ...model,
     outcome: actualOutcome,
     grounding: {
       corpusRevision,
+      expectedSourceIds: [...evaluationCase.expectedSourceIds],
+      forbiddenSourceIds: [...(evaluationCase.forbiddenSourceIds ?? [])],
       retrievedSourceIds: observedSources,
       sourceRecall: sourceRecall(evaluationCase.expectedSourceIds, observedSources),
     },
@@ -453,6 +527,7 @@ async function runProvider(
       sourceIds: citationSources,
       precision: citationPrecision(evaluationCase.expectedSourceIds, citationSources),
       completeness: citationCompleteness(evaluationCase.expectedSourceIds, citationSources),
+      violations: citationViolations,
     },
     quality: {
       outcomeCorrect: actualOutcome === evaluationCase.expectedOutcome,
@@ -480,6 +555,7 @@ async function runProvider(
       ...metrics.capacity,
     },
     tools: metrics.tools,
+    toolTelemetryPresent: metrics.toolTelemetryPresent,
     ...(failure === undefined ? {} : { failure }),
     ...(metrics.cancelled ? { cancelled: true } : {}),
     ...(metrics.cost === undefined ? {} : { cost: metrics.cost }),
@@ -516,6 +592,7 @@ export async function runPairedEvaluationCase(options: {
     schemaVersion: "v1",
     caseId: options.evaluationCase.id,
     inputDigest: hosted.inputDigest,
+    accessScopeDigest: hosted.accessScopeDigest,
     corpusRevision: options.corpusRevision,
     hosted,
     local,
@@ -525,10 +602,11 @@ export async function runPairedEvaluationCase(options: {
 function average(values: readonly number[]): number {
   return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
 }
-
 function aggregate(provider: EvaluationProvider, paired: readonly PairedEvaluation[]): ProviderAggregate {
   const traces = paired.map((item) => item[provider]);
-  const costs = traces.map((trace) => trace.cost).filter((cost): cost is number => cost !== undefined);
+  const costs = traces
+    .map((trace) => trace.cost)
+    .filter((cost): cost is number => cost !== undefined && Number.isFinite(cost));
   const attemptedTools = traces.reduce((sum, trace) => sum + trace.tools.attempted, 0);
   return {
     caseCount: traces.length,
@@ -537,10 +615,23 @@ function aggregate(provider: EvaluationProvider, paired: readonly PairedEvaluati
     citationPrecision: average(traces.map((trace) => trace.citations.precision)),
     citationCompleteness: average(traces.map((trace) => trace.citations.completeness)),
     latencyP95Ms: nearestRank(traces.map((trace) => trace.latency.totalMs), 0.95),
-    failureRate: average(traces.map((trace) => (trace.outcome === "failed" || trace.outcome === "retrieval-unavailable" ? 1 : 0))),
+    failureRate: average(
+      traces.map((trace) =>
+        trace.outcome === "failed" || trace.outcome === "retrieval-unavailable" ? 1 : 0,
+      ),
+    ),
     cancellationRate: average(traces.map((trace) => (trace.cancelled ? 1 : 0))),
     averageCost: costs.length === 0 ? null : average(costs),
-    toolFailureRate: attemptedTools === 0 ? 0 : traces.reduce((sum, trace) => sum + trace.tools.failed, 0) / attemptedTools,
+    costMeasurementCount: costs.length,
+    toolFailureRate:
+      attemptedTools === 0
+        ? 0
+        : traces.reduce((sum, trace) => sum + trace.tools.failed, 0) / attemptedTools,
+    toolTelemetryCount: traces.filter((trace) => trace.toolTelemetryPresent).length,
+    citationViolationCount: traces.reduce(
+      (sum, trace) => sum + trace.citations.violations.length,
+      0,
+    ),
   };
 }
 
@@ -559,12 +650,26 @@ function evaluateGate(aggregateValue: ProviderAggregate, thresholds: EvaluationT
   checkMax("latency p95", aggregateValue.latencyP95Ms, thresholds.maxLatencyP95Ms);
   checkMax("failure rate", aggregateValue.failureRate, thresholds.maxFailureRate);
   checkMax("cancellation rate", aggregateValue.cancellationRate, thresholds.maxCancellationRate);
+  if (aggregateValue.citationViolationCount > 0) {
+    violations.push(
+      `${provider} citation safety violations ${aggregateValue.citationViolationCount}`,
+    );
+  }
   if (thresholds.maxCost !== undefined) {
-    if (aggregateValue.averageCost === null) violations.push(`${provider} cost is unavailable`);
-    else checkMax("average cost", aggregateValue.averageCost, thresholds.maxCost);
+    if (aggregateValue.costMeasurementCount !== aggregateValue.caseCount) {
+      violations.push(`${provider} cost telemetry is incomplete`);
+    } else if (aggregateValue.averageCost === null) {
+      violations.push(`${provider} cost is unavailable`);
+    } else {
+      checkMax("average cost", aggregateValue.averageCost, thresholds.maxCost);
+    }
   }
   if (thresholds.maxToolFailureRate !== undefined) {
-    checkMax("tool failure rate", aggregateValue.toolFailureRate, thresholds.maxToolFailureRate);
+    if (aggregateValue.toolTelemetryCount !== aggregateValue.caseCount) {
+      violations.push(`${provider} tool telemetry is incomplete`);
+    } else {
+      checkMax("tool failure rate", aggregateValue.toolFailureRate, thresholds.maxToolFailureRate);
+    }
   }
   return { pass: violations.length === 0, violations, aggregate: aggregateValue };
 }
@@ -580,10 +685,28 @@ export function compareProviderEvaluations(
   for (const item of paired) {
     if (caseIds.has(item.caseId)) throw new Error(`duplicate evaluation case: ${item.caseId}`);
     caseIds.add(item.caseId);
-    if (item.hosted.inputDigest !== item.local.inputDigest || item.inputDigest !== item.hosted.inputDigest) {
+    if (
+      item.hosted.caseId !== item.caseId ||
+      item.local.caseId !== item.caseId
+    ) {
+      throw new Error(`paired evaluation case identity mismatch for case ${item.caseId}`);
+    }
+    if (
+      item.hosted.inputDigest !== item.local.inputDigest ||
+      item.inputDigest !== item.hosted.inputDigest
+    ) {
       throw new Error(`paired evaluation input mismatch for case ${item.caseId}`);
     }
-    if (item.hosted.corpusRevision !== item.local.corpusRevision || item.corpusRevision !== corpusRevision) {
+    if (
+      item.hosted.accessScopeDigest !== item.local.accessScopeDigest ||
+      item.accessScopeDigest !== item.hosted.accessScopeDigest
+    ) {
+      throw new Error(`paired evaluation AccessScope mismatch for case ${item.caseId}`);
+    }
+    if (
+      item.hosted.corpusRevision !== item.local.corpusRevision ||
+      item.corpusRevision !== corpusRevision
+    ) {
       throw new Error(`paired evaluation corpus revision mismatch for case ${item.caseId}`);
     }
   }
@@ -634,6 +757,7 @@ const caseSchema = z
     expectedOutcome: z.enum(["grounded", "insufficient-evidence"]),
     expectedSourceIds: z.array(z.string().min(1)),
     forbiddenSourceIds: z.array(z.string().min(1)).optional(),
+    accessScope: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 
@@ -658,6 +782,65 @@ const productionBaselineSchema = z
     thresholds: thresholdSchema,
   })
   .strict();
+const REQUIRED_COHORT_COUNTS: Record<EvaluationCase["category"], number> = {
+  "thai-single-source": 10,
+  "english-single-source": 5,
+  "multi-source": 5,
+  "paraphrase-terminology": 5,
+  "insufficient-evidence": 3,
+  "retrieved-prompt-injection": 2,
+};
+
+function reviewedCaseViolations(cases: readonly EvaluationCase[]): string[] {
+  const violations: string[] = [];
+  const seen = new Set<string>();
+  const counts: Record<EvaluationCase["category"], number> = {
+    "thai-single-source": 0,
+    "english-single-source": 0,
+    "multi-source": 0,
+    "paraphrase-terminology": 0,
+    "insufficient-evidence": 0,
+    "retrieved-prompt-injection": 0,
+  };
+  for (const evaluationCase of cases) {
+    if (seen.has(evaluationCase.id)) {
+      violations.push(`reviewed case ${evaluationCase.id} is duplicated`);
+    }
+    seen.add(evaluationCase.id);
+    counts[evaluationCase.category] += 1;
+    const expectedSources = evaluationCase.expectedSourceIds.length;
+    const valid =
+      (evaluationCase.category === "thai-single-source" &&
+        evaluationCase.language === "th" &&
+        evaluationCase.expectedOutcome === "grounded" &&
+        expectedSources === 1) ||
+      (evaluationCase.category === "english-single-source" &&
+        evaluationCase.language === "en" &&
+        evaluationCase.expectedOutcome === "grounded" &&
+        expectedSources === 1) ||
+      (evaluationCase.category === "multi-source" &&
+        evaluationCase.expectedOutcome === "grounded" &&
+        expectedSources >= 2) ||
+      ((evaluationCase.category === "paraphrase-terminology" ||
+        evaluationCase.category === "retrieved-prompt-injection") &&
+        evaluationCase.expectedOutcome === "grounded" &&
+        expectedSources > 0) ||
+      (evaluationCase.category === "insufficient-evidence" &&
+        evaluationCase.expectedOutcome === "insufficient-evidence" &&
+        expectedSources === 0);
+    if (!valid) {
+      violations.push(`reviewed case ${evaluationCase.id} does not match its cohort`);
+    }
+    if (evaluationCase.expectedOutcome === "grounded" && expectedSources === 0) {
+      violations.push(`reviewed case ${evaluationCase.id} is missing authoritative source mappings`);
+    }
+  }
+  for (const [category, required] of Object.entries(REQUIRED_COHORT_COUNTS)) {
+    const actual = counts[category as EvaluationCase["category"]];
+    if (actual < required) violations.push(`reviewed cohort ${category} is incomplete`);
+  }
+  return violations;
+}
 
 export function decidePromotion(options: {
   comparison: ProviderComparison;
@@ -683,6 +866,7 @@ export function decidePromotion(options: {
     else baseline = parsed.data;
   }
   if (!cases || !baseline) return { promote: false, reasons };
+  reasons.push(...reviewedCaseViolations(cases.cases));
   if (cases.cases.length < 30) {
     reasons.push(
       "authoritative reviewed-case artifact is incomplete: at least 30 cases are required",
@@ -700,17 +884,24 @@ export function decidePromotion(options: {
   ) {
     reasons.push("authoritative artifacts and comparison must use the same CorpusRevision");
   }
+  const reviewedCaseIds = new Set(cases.cases.map((evaluationCase) => evaluationCase.id));
   const comparedCaseIds = new Set(options.comparison.paired.map((item) => item.caseId));
   for (const evaluationCase of cases.cases) {
-    if (!comparedCaseIds.has(evaluationCase.id)) {
+    const paired = options.comparison.paired.find((item) => item.caseId === evaluationCase.id);
+    if (!paired) {
       reasons.push(`reviewed case ${evaluationCase.id} was not executed`);
+      continue;
     }
-    if (
-      evaluationCase.expectedOutcome === "grounded" &&
-      evaluationCase.expectedSourceIds.length === 0
-    ) {
-      reasons.push(`reviewed case ${evaluationCase.id} is missing authoritative source mappings`);
+    const normalized = canonicalInput(evaluationCaseInput(evaluationCase));
+    if (paired.inputDigest !== inputDigest(normalized)) {
+      reasons.push(`reviewed case ${evaluationCase.id} input identity mismatch`);
     }
+    if (paired.accessScopeDigest !== scopeDigest(normalized.accessScope ?? {})) {
+      reasons.push(`reviewed case ${evaluationCase.id} AccessScope identity mismatch`);
+    }
+  }
+  for (const caseId of comparedCaseIds) {
+    if (!reviewedCaseIds.has(caseId)) reasons.push(`unexpected compared case ${caseId}`);
   }
   if (!options.comparison.gates.local.pass) {
     reasons.push(...options.comparison.gates.local.violations);

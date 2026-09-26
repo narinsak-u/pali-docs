@@ -62,3 +62,24 @@ No formatter, linter, project-wide suite, or GPU test was run.
 - The execution host is Apple Silicon Darwin without a Linux NVIDIA GPU, `nvidia-smi`, or a reachable private vLLM deployment. Real Qwen3/vLLM serving, latency, capacity, cost, and failure measurements cannot be established here.
 - Consequently this change makes no production quality claim and does **not** claim promotion or canary readiness. The promotion decision remains false until the ingestion/evaluation owner supplies authoritative reviewed cases and a ProductionBaseline, and the deployment owner runs the real pinned vLLM workload on the documented Linux NVIDIA host.
 - Hosted provider rollback remains required by the gate and is not removed or replaced.
+
+## Review response
+
+The follow-up review identified six fail-closed gaps; all were addressed in the same implementation:
+
+1. Reviewed artifacts now reject duplicate IDs, invalid cohort/category/language/outcome/source-count combinations, missing required cohorts, and fewer than 30 cases. Promotion compares the reviewed ID set exactly with the executed paired ID set, rejecting both missing and unexpected cases.
+2. The comparator rejects hosted/local trace case-ID mismatches, input-digest mismatches, AccessScope-digest mismatches, and CorpusRevision mismatches. Promotion also recomputes each reviewed case's normalized input and AccessScope digest before accepting its trace.
+3. Traces retain authoritative expected/forbidden source mappings and citation safety violations. Forbidden and unknown citation sources produce a safety gate violation even if retrieval accepted the source.
+4. An active cost threshold requires finite cost telemetry for every compared trace/provider; missing or partial cost measurements fail closed rather than being averaged away.
+5. An active tool-failure threshold requires tool lifecycle telemetry for every compared trace/provider; absent lifecycle events fail closed rather than being treated as zero failures.
+6. AccessScope is part of both provider inputs, the normalized input digest, and the redacted trace (with a safe scope projection plus digest). Sensitive scope keys are omitted.
+
+Updated focused evidence:
+
+```text
+$ cd apps/web && bunx vitest run tests/provider-evaluation.test.ts tests/compare-rag.test.ts
+Test Files  2 passed (2)
+Tests       19 passed (19)
+```
+
+The authoritative #42 reviewed-case/ProductionBaseline prerequisite remains unavailable, and no baseline or promotion claim is made.

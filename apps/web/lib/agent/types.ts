@@ -10,6 +10,7 @@ export type AgentTurnOutcome =
 export interface AgentTurnInput {
   runId: string;
   messages: SafeQuestionRequest["messages"];
+  accessScope?: Record<string, unknown>;
 }
 
 export type AgentTurnResult =
