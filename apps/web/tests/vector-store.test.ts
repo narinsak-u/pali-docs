@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockedNamespace = vi.hoisted(() => vi.fn());
@@ -135,6 +137,24 @@ describe("queryPinecone", () => {
         },
       ],
     });
+    mockedNamespace.mockReturnValue({ query: mockQuery });
+
+    await expect(queryPinecone([0.1], 5)).resolves.toEqual([]);
+  });
+  it("rejects stale and forged metadata from the shared parity fixture", async () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        resolve(process.cwd(), "../../tests/fixtures/retrieval-parity.json"),
+        "utf8",
+      ),
+    ) as {
+      invalidMatches: Array<{
+        id: string;
+        score: number;
+        metadata: Record<string, unknown>;
+      }>;
+    };
+    const mockQuery = vi.fn().mockResolvedValue({ matches: fixture.invalidMatches });
     mockedNamespace.mockReturnValue({ query: mockQuery });
 
     await expect(queryPinecone([0.1], 5)).resolves.toEqual([]);

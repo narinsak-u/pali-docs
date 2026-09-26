@@ -7,6 +7,7 @@ import {
   assertComparisonReady,
   compareAggregates,
   compareRecords,
+  createComparisonSummary,
   createFastApiRunner,
 } from "@/scripts/compare-rag";
 import { aggregateEvaluation } from "@/lib/rag/evaluation";
@@ -203,6 +204,35 @@ describe("paired deltas", () => {
       latencyMs: 25,
       tokenUse: null,
       cost: null,
+    });
+  });
+  it("labels dense baseline and candidate aggregates alongside their deltas", () => {
+    const baseline = aggregateEvaluation([record()]);
+    const candidate = aggregateEvaluation([
+      record({
+        runner: "langgraph",
+        candidateCount: 8,
+        latencyMs: { total: 125, retrieval: 50, generation: 75 },
+      }),
+    ]);
+
+    expect(
+      createComparisonSummary(
+        { runner: "ai-sdk", retrievalConfig: "dense-baseline", aggregate: baseline },
+        { runner: "langgraph", retrievalConfig: "retrieval-quality", aggregate: candidate },
+      ),
+    ).toEqual({
+      baseline: {
+        runner: "ai-sdk",
+        retrievalConfig: "dense-baseline",
+        aggregate: baseline,
+      },
+      candidate: {
+        runner: "langgraph",
+        retrievalConfig: "retrieval-quality",
+        aggregate: candidate,
+      },
+      deltas: compareAggregates(baseline, candidate),
     });
   });
 });

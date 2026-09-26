@@ -96,6 +96,28 @@ export function compareAggregates(
     cost: nullableDelta(candidate.averageCost, baseline.averageCost),
   };
 }
+export interface ComparisonAggregateSnapshot {
+  runner: string;
+  retrievalConfig: string;
+  aggregate: RagEvaluationAggregate;
+}
+
+export interface ComparisonSummary {
+  baseline: ComparisonAggregateSnapshot;
+  candidate: ComparisonAggregateSnapshot;
+  deltas: AggregateComparison;
+}
+
+export function createComparisonSummary(
+  baseline: ComparisonAggregateSnapshot,
+  candidate: ComparisonAggregateSnapshot,
+): ComparisonSummary {
+  return {
+    baseline,
+    candidate,
+    deltas: compareAggregates(baseline.aggregate, candidate.aggregate),
+  };
+}
 
 export function compareRecords(
   aiSdk: RagEvaluationRecord,
@@ -367,6 +389,18 @@ export async function main(): Promise<void> {
   const langGraphRecords = comparisons.map(({ langGraph }) => langGraph);
   const aiSdkAggregate = aggregateEvaluation(aiSdkRecords);
   const langGraphAggregate = aggregateEvaluation(langGraphRecords);
+  const pairedComparison = createComparisonSummary(
+    {
+      runner: "ai-sdk",
+      retrievalConfig: baselineRetrievalConfig,
+      aggregate: aiSdkAggregate,
+    },
+    {
+      runner: "langgraph",
+      retrievalConfig: candidateRetrievalConfig,
+      aggregate: langGraphAggregate,
+    },
+  );
   const violations = {
     "ai-sdk": evaluateGates(
       aiSdkRecords,
@@ -396,7 +430,8 @@ export async function main(): Promise<void> {
           [baselineRetrievalConfig]: aiSdkAggregate,
           [candidateRetrievalConfig]: langGraphAggregate,
         },
-        aggregateDeltas: compareAggregates(aiSdkAggregate, langGraphAggregate),
+        aggregateDeltas: pairedComparison.deltas,
+        pairedComparison,
         violations,
       },
       null,

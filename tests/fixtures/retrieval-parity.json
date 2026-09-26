@@ -1,0 +1,106 @@
+{
+  "corpusRevision": "parity-test-revision",
+  "maxParentContextChars": 24,
+  "denseMatches": [
+    {
+      "id": "child-1",
+      "score": 0.93,
+      "metadata": {
+        "text": "First child evidence.",
+        "source": "book/guide",
+        "sourceId": "book/guide",
+        "sourceVersion": "version-1",
+        "title": "Guide",
+        "corpusRevision": "parity-test-revision",
+        "section": "section-1",
+        "parentId": "parent-1",
+        "parentText": "Shared parent context that is intentionally longer than the bound."
+      }
+    },
+    {
+      "id": "child-2",
+      "score": 0.9,
+      "metadata": {
+        "text": "Second child evidence.",
+        "source": "book/guide",
+        "sourceId": "book/guide",
+        "sourceVersion": "version-1",
+        "title": "Guide",
+        "corpusRevision": "parity-test-revision",
+        "section": "section-1",
+        "parentId": "parent-1",
+        "parentText": "Shared parent context that is intentionally longer than the bound."
+      }
+    },
+    {
+      "id": "suffix-1",
+      "score": 0.8,
+      "metadata": {
+        "text": "Dense suffix evidence one.",
+        "source": "book/suffix",
+        "sourceId": "book/suffix",
+        "sourceVersion": "version-1",
+        "title": "Suffix",
+        "corpusRevision": "parity-test-revision",
+        "section": "section-2"
+      }
+    },
+    {
+      "id": "suffix-2",
+      "score": 0.7,
+      "metadata": {
+        "text": "Dense suffix evidence two.",
+        "source": "book/suffix",
+        "sourceId": "book/suffix",
+        "sourceVersion": "version-1",
+        "title": "Suffix",
+        "corpusRevision": "parity-test-revision",
+        "section": "section-2"
+      }
+    }
+  ],
+  "invalidMatches": [
+    {
+      "id": "stale-revision",
+      "score": 0.99,
+      "metadata": {
+        "text": "Stale evidence.",
+        "source": "book/stale",
+        "sourceId": "book/stale",
+        "sourceVersion": "version-old",
+        "title": "Stale",
+        "corpusRevision": "other-revision"
+      }
+    },
+    {
+      "id": "forged-source",
+      "score": 0.98,
+      "metadata": {
+        "text": "Forged evidence.",
+        "source": "book/guide",
+        "sourceId": "book/other",
+        "sourceVersion": "version-1",
+        "title": "Forged",
+        "corpusRevision": "parity-test-revision"
+      }
+    }
+  ],
+  "rerankedPrefixIds": ["child-2", "child-1"],
+  "expected": {
+    "denseIds": ["child-1", "child-2", "suffix-1", "suffix-2"],
+    "rerankedIds": ["child-2", "child-1", "suffix-1", "suffix-2"],
+    "expandedIds": ["child-1", "child-2", "suffix-1", "suffix-2"],
+    "fallbackReason": "unavailable",
+    "boundedParentText": "Shared parent context th",
+    "citationIds": ["child-1", "child-2", "suffix-1", "suffix-2"],
+    "metrics": {
+      "candidateCount": 4,
+      "acceptedCount": 4,
+      "hierarchyExpansion": true,
+      "rerankerUsed": false,
+      "rerankerFallbackReason": "unavailable",
+      "rerankerModelVersion": "lexical-v1",
+      "retrievalConfigVersion": "rag-v1"
+    }
+  }
+}
