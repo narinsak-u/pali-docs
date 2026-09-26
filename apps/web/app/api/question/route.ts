@@ -7,10 +7,15 @@ import {
   createStructuredTraceSink,
 } from "@/lib/agent/structured-trace-sink";
 import type { AgentTurnRunner } from "@/lib/agent/types";
-import { readCanaryState, selectInternalCanaryBackend } from "@/lib/config/canary";
+import {
+  readCanaryState,
+  selectInternalCanaryBackend,
+  type LoadedCanaryState,
+} from "@/lib/config/canary";
+import { getAuthenticatedTenantId } from "@/lib/config/canary-context";
 import { getModelConfig } from "@/lib/config/model";
 import { getRagConfig } from "@/lib/config/rag";
-import { getRolloutConfig, selectRagBackend } from "@/lib/config/rollout";
+import { getRolloutConfig, selectRagBackend, type RagBackend } from "@/lib/config/rollout";
 import { isQuotaError } from "@/lib/services/quiz-pipeline";
 import {
   parseQuestionRequestBody,
@@ -86,9 +91,17 @@ function createAiSdkResponse(
   }
 }
 
-function authenticatedTenantId(req: Request): string | undefined {
-  const value = (req as Request & { authenticatedTenantId?: unknown }).authenticatedTenantId;
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+export function selectQuestionBackend(
+  request: Request,
+  runId: string,
+  canaryState: LoadedCanaryState = readCanaryState(),
+): RagBackend {
+  const tenantId = getAuthenticatedTenantId(request);
+  if (canaryState === null || (canaryState !== undefined && tenantId === undefined)) {
+    return "ai-sdk";
+  }
+  if (canaryState === undefined) return selectRagBackend(runId, getRolloutConfig());
+  return selectInternalCanaryBackend({ tenantId: tenantId ?? "", requestId: runId }, canaryState);
 }
 
 export async function POST(req: Request): Promise<Response> {
@@ -100,17 +113,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const runId = globalThis.crypto.randomUUID();
-  const canaryState = readCanaryState();
-  const tenantId = authenticatedTenantId(req);
-  const backend =
-    canaryState === null || (canaryState !== undefined && tenantId === undefined)
-      ? "ai-sdk"
-      : canaryState === undefined
-        ? selectRagBackend(runId, getRolloutConfig())
-        : selectInternalCanaryBackend(
-            { tenantId, requestId: runId },
-            canaryState,
-          );
+  const backend = selectQuestionBackend(req, runId);
 
   if (backend === "langgraph") {
     const baseUrl = process.env.FASTAPI_BASE_URL?.trim().replace(/\/+$/, "");

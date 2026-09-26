@@ -22,6 +22,7 @@ export interface CanaryState {
   lastRollbackReason?: string;
   promotionEvidence?: CanaryPromotionEvidence;
 }
+export type LoadedCanaryState = CanaryState | null | undefined;
 
 export type CanaryPromotionInput = {
   comparison: ProviderComparison;
@@ -134,9 +135,11 @@ function hostedState(reason?: string): CanaryState {
     ...(reason ? { lastRollbackReason: reason } : {}),
   };
 }
-
-function copyState(state: CanaryState): CanaryState {
-  return validateState(JSON.parse(JSON.stringify(state)), false);
+function copyState(state: CanaryState, requirePromotionEvidence = true): CanaryState {
+  return validateState(
+    JSON.parse(JSON.stringify(state)),
+    requirePromotionEvidence,
+  );
 }
 
 
@@ -171,7 +174,7 @@ export class CanaryController {
   }
 
   snapshot(): CanaryState {
-    return copyState(this.state);
+    return copyState(this.state, false);
   }
 
   startCanary(
@@ -254,6 +257,17 @@ export class CanaryController {
         accepted: false,
         state: this.snapshot(),
         reasons: ["promotion requires an active canary"],
+      };
+    }
+    if (
+      !this.state.promotionEvidence ||
+      !verifiedPromotionEvidence(this.state.promotionEvidence) ||
+      JSON.stringify(decision) !== JSON.stringify(this.state.promotionEvidence.decision)
+    ) {
+      return {
+        accepted: false,
+        state: this.snapshot(),
+        reasons: ["authoritative Task 6 promotion evidence must be revalidated"],
       };
     }
     const current = parseNow(now);

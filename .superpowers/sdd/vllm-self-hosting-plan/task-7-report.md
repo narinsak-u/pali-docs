@@ -41,7 +41,7 @@ After implementing the state machine and BFF wiring:
 ```text
 $ cd apps/web && bunx vitest run tests/canary.test.ts tests/route.test.ts tests/rollout.test.ts
 Test Files  3 passed (3)
-Tests       47 passed (47)
+Tests       50 passed (50)
 ```
 
 The focused tests cover:
@@ -109,3 +109,29 @@ Tests       29 passed (29)
 ```
 
 The external #42 reviewed-case and ProductionBaseline prerequisite remains unavailable; this revision still makes no promotion or canary-readiness claim.
+
+## Re-review response 2
+
+The second re-review identified two remaining trust and persistence concerns; both are closed:
+
+1. There is no existing authentication middleware in this worktree. The route therefore uses a conservative, symbol-keyed `withAuthenticatedTenant` server-only context producer and `getAuthenticatedTenantId` consumer. The context cannot be supplied through HTTP headers or request JSON. Until deployment authentication middleware calls this producer, every real request remains hosted fallback; no canary readiness is claimed. The route seam test covers both the trusted producer path and absent-identity hosted fallback.
+2. `CanaryController` now strictly validates active initial state and `promote` re-runs `decidePromotion` against the stored full evidence, requiring an exact match with the caller decision. Evidence-less in-memory bypass states cannot be initialized, and a promotion cannot proceed if the stored Task 6 decision is stale or altered. The rollback-window boundary remains a hard rejection.
+
+RED evidence for this review:
+
+```text
+$ cd apps/web && bunx vitest run tests/canary.test.ts tests/route.test.ts
+2 failed
+- evidence-less active state could be initialized before strict constructor validation
+- promotion did not revalidate stored Task 6 evidence before the fix
+```
+
+GREEN evidence after the fixes:
+
+```text
+$ cd apps/web && bunx vitest run tests/canary.test.ts tests/route.test.ts
+Test Files  2 passed (2)
+Tests       32 passed (32)
+```
+
+The missing authentication producer and issue #42 authoritative reviewed-case/ProductionBaseline artifacts are explicit external prerequisites. This revision still makes no promotion or canary-readiness claim.

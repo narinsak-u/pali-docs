@@ -78,7 +78,10 @@ vi.mock("ai", () => ({
   ),
 }));
 
-import { POST } from "@/app/api/question/route";
+import { POST, selectQuestionBackend } from "@/app/api/question/route";
+import {
+  withAuthenticatedTenant,
+} from "@/lib/config/canary-context";
 
 const validBody = {
   messages: [
@@ -314,6 +317,24 @@ describe("POST /api/question", () => {
       ],
     });
     expect(JSON.stringify(await response.json())).toContain("BACKEND ANSWER");
+  });
+  it("requires the trusted server context and never uses a client-shaped identity", () => {
+    const request = makeRequest(validBody);
+    const state = {
+      schemaVersion: "v1" as const,
+      state: "promoted" as const,
+      target: "langgraph" as const,
+      trafficPercent: 100,
+      cohortSalt: "server-owned",
+      startedAt: "2026-09-26T00:00:00.000Z",
+      observationEndsAt: "2026-09-26T01:00:00.000Z",
+      rollbackAvailableUntil: "2026-09-27T00:00:00.000Z",
+      promotedAt: "2026-09-26T01:00:00.000Z",
+    };
+
+    expect(selectQuestionBackend(request, "server-run", state)).toBe("ai-sdk");
+    withAuthenticatedTenant(request, { tenantId: "tenant-a" });
+    expect(selectQuestionBackend(request, "server-run", state)).toBe("langgraph");
   });
   it("fails closed for schema-valid canary state without authoritative evidence", async () => {
     vi.stubEnv(

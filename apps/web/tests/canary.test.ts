@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as ProviderEvaluation from "@/lib/rag/provider-evaluation";
 import type { PromotionDecision } from "@/lib/rag/provider-evaluation";
 import {
   CanaryController,
   deserializeCanaryState,
   selectInternalCanaryBackend,
   serializeCanaryState,
+  type CanaryPromotionEvidence,
   type CanaryState,
 } from "@/lib/config/canary";
 
@@ -24,6 +26,18 @@ function canaryState(): CanaryState {
     startedAt: "2026-09-26T00:00:00.000Z",
     observationEndsAt: "2026-09-26T01:00:00.000Z",
     rollbackAvailableUntil: "2026-09-27T00:00:00.000Z",
+  };
+}
+
+function passingEvidence(): CanaryPromotionEvidence {
+  return {
+    decision: passingDecision,
+    input: {
+      comparison: null as unknown as CanaryPromotionEvidence["input"]["comparison"],
+      reviewedCases: null,
+      productionBaseline: null,
+      rollbackReady: true,
+    },
   };
 }
 
@@ -78,28 +92,58 @@ describe("server-owned canary targeting", () => {
     expect(result.reasons).toContain("authoritative Task 6 promotion evidence is required");
     expect(controller.snapshot().state).toBe("hosted");
   });
-
   it("rejects promotion at the rollback-window boundary", () => {
-    const controller = new CanaryController(canaryState());
+    const gate = vi
+      .spyOn(ProviderEvaluation, "decidePromotion")
+      .mockReturnValue(passingDecision);
+    try {
+      const controller = new CanaryController();
+      expect(
+        controller.startCanary(passingDecision, {
+          now: "2026-09-26T00:00:00.000Z",
+          trafficPercent: 10,
+          cohortSalt: "test-salt",
+          rollbackWindowMs: 24 * 60 * 60 * 1000,
+          promotionEvidence: passingEvidence(),
+        }).accepted,
+      ).toBe(true);
 
-    const result = controller.promote(passingDecision, "2026-09-27T00:00:00.000Z");
+      const result = controller.promote(passingDecision, "2026-09-27T00:00:00.000Z");
 
-    expect(result.accepted).toBe(false);
-    expect(result.reasons).toContain("rollback window has expired; revalidation is required");
-    expect(controller.snapshot().state).toBe("canary");
+      expect(result.accepted).toBe(false);
+      expect(result.reasons).toContain("rollback window has expired; revalidation is required");
+      expect(controller.snapshot().state).toBe("canary");
+    } finally {
+      gate.mockRestore();
+    }
   });
 
   it("rolls back to hosted and targets no canary traffic", () => {
-    const controller = new CanaryController(canaryState());
+    const gate = vi
+      .spyOn(ProviderEvaluation, "decidePromotion")
+      .mockReturnValue(passingDecision);
+    try {
+      const controller = new CanaryController();
+      expect(
+        controller.startCanary(passingDecision, {
+          now: "2026-09-26T00:00:00.000Z",
+          trafficPercent: 10,
+          cohortSalt: "test-salt",
+          promotionEvidence: passingEvidence(),
+        }).accepted,
+      ).toBe(true);
 
-    const result = controller.rollback("local_provider_unavailable", "2026-09-26T02:00:00.000Z");
+      const result = controller.rollback("local_provider_unavailable", "2026-09-26T02:00:00.000Z");
 
-    expect(result.accepted).toBe(true);
-    expect(controller.snapshot().state).toBe("hosted");
-    expect(selectInternalCanaryBackend({ tenantId: "tenant-a", requestId: "request" }, controller.snapshot())).toBe(
-      "ai-sdk",
-    );
-    expect(result.fallback).toBe("ai-sdk");
+      expect(result.accepted).toBe(true);
+      expect(controller.snapshot().state).toBe("hosted");
+      expect(selectInternalCanaryBackend({ tenantId: "tenant-a", requestId: "request" }, controller.snapshot())).toBe(
+        "ai-sdk",
+      );
+      expect(result.fallback).toBe("ai-sdk");
+    } finally {
+      gate.mockRestore();
+    }
   });
 
   it("serializes hosted state and rejects a schema-valid active-state bypass", () => {
@@ -131,5 +175,36 @@ describe("server-owned canary targeting", () => {
         promoted,
       ),
     ).toBe("langgraph");
+  });
+
+  it("rejects an evidence-less active state before any transition", () => {
+    expect(() => new CanaryController(canaryState())).toThrow(
+      "active canary state requires Task 6 promotion evidence",
+    );
+  });
+
+  it("revalidates stored Task 6 evidence before promotion", () => {
+    const gate = vi
+      .spyOn(ProviderEvaluation, "decidePromotion")
+      .mockReturnValue(passingDecision);
+    try {
+      const controller = new CanaryController();
+      expect(
+        controller.startCanary(passingDecision, {
+          now: "2026-09-26T00:00:00.000Z",
+          trafficPercent: 10,
+          cohortSalt: "test-salt",
+          promotionEvidence: passingEvidence(),
+        }).accepted,
+      ).toBe(true);
+      gate.mockReturnValue(blockedDecision);
+
+      const result = controller.promote(passingDecision, "2026-09-26T01:00:00.000Z");
+
+      expect(result.accepted).toBe(false);
+      expect(result.reasons).toContain("authoritative Task 6 promotion evidence must be revalidated");
+    } finally {
+      gate.mockRestore();
+    }
   });
 });
