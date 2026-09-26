@@ -65,6 +65,7 @@ def test_local_provider_uses_the_existing_chat_model_seam() -> None:
     assert model.openai_api_key.get_secret_value() == "vllm-key"
     assert model.request_timeout == 45
     assert model.max_tokens == 768
+    assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def test_hosted_provider_remains_selectable_for_rollback() -> None:
@@ -192,6 +193,7 @@ async def test_question_route_streams_with_local_provider(
     assert b'"eventType":"run.started"' in body
     assert b'"eventType":"run.completed"' in body
     assert model.model_name == "Qwen/Qwen3-8B"
+    assert model.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 @pytest.mark.asyncio

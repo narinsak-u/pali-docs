@@ -1,0 +1,60 @@
+services:
+  vllm:
+    # v0.8.5 includes the Qwen3 reasoning parser; keep the digest immutable.
+    image: vllm/vllm-openai@sha256:6cf9808ca8810fc6c3fd0451c2e7784fb224590d81f7db338e7eaf3c02a33d33
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --model
+      - Qwen/Qwen3-8B
+      - --revision
+      - b968826d9c46dd6066d109eabc6255188de91218
+      - --tokenizer
+      - Qwen/Qwen3-8B
+      - --tokenizer-revision
+      - b968826d9c46dd6066d109eabc6255188de91218
+      - --served-model-name
+      - Qwen/Qwen3-8B
+      - --reasoning-parser
+      - qwen3
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+      - --tensor-parallel-size
+      - "1"
+      - --dtype
+      - bfloat16
+      - --api-key
+      - ${VLLM_API_KEY:?VLLM_API_KEY must be set}
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports:
+      # The model endpoint is host-private; only the server-side API may use it.
+      - "127.0.0.1:8000:8000"
+    shm_size: "16gb"
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+
+volumes:
+  vllm-cache:

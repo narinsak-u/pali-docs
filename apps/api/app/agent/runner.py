@@ -139,7 +139,11 @@ class LangChainModelStages:
             "max_retries": 0,
         }
         if provider == "local":
-            kwargs.update(timeout=timeout, max_tokens=max_tokens)
+            kwargs.update(
+                timeout=timeout,
+                max_tokens=max_tokens,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
         self._model = ChatOpenAI(**kwargs)
         return self._model
 
