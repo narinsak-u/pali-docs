@@ -105,3 +105,23 @@ Tests       36 passed (36)
 The external #42 reviewed-case/ProductionBaseline prerequisite and real GPU/provider measurements remain unavailable; no promotion or production quality claim is made.
 
 The comparator also rejects duplicate or overlapping expected/forbidden source mappings on every paired trace before aggregate metrics are calculated.
+
+## Review response 3
+
+The scoped re-review found five contract issues and they are addressed:
+
+1. Run metrics initialize `capacity: {}` before optional cost/token/queue fields are assigned.
+2. The `AgentEvent` union preserves `run.failed` and adds tool lifecycle events without replacing existing terminal events.
+3. Optional reviewed `forbiddenSourceIds` are normalized to an empty list before length, set, or overlap checks.
+4. The strict LangGraph adapter accepts legacy `run.completed` payloads and now forwards finite nonnegative cost, prompt-token, completion-token, and queue telemetry fields.
+5. The adapter accepts strict `tool.started`, `tool.completed`, and `tool.failed` payloads with bounded tool IDs and optional safe failure codes, forwarding them to the evaluator lifecycle gate.
+
+Focused evidence:
+
+```text
+$ cd apps/web && bunx vitest run tests/langgraph-event-adapter.test.ts tests/provider-evaluation.test.ts tests/ai-sdk-runner.test.ts tests/compare-rag.test.ts
+Test Files  4 passed (4)
+Tests       40 passed (40)
+```
+
+The authoritative #42 reviewed-case/ProductionBaseline prerequisite remains unavailable; no production quality or promotion claim is made.

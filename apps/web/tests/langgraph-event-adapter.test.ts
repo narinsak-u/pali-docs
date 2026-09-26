@@ -93,6 +93,32 @@ describe("LangGraph retrieval event contract", () => {
       rerankerUsed: true,
     });
   });
+  it("forwards cost telemetry and strict tool lifecycle events", async () => {
+    const emitted = await consume([
+      envelope(0, "tool.started", { toolId: "retrieval-tool" }),
+      envelope(1, "tool.completed", { toolId: "retrieval-tool" }),
+      envelope(2, "run.completed", {
+        outcome: "answered",
+        cost: 0.12,
+        promptTokens: 20,
+        completionTokens: 8,
+        queueMs: 3.5,
+      }),
+    ]);
+    expect(emitted).toEqual([
+      { type: "tool.started", runId: "run-1", toolId: "retrieval-tool" },
+      { type: "tool.completed", runId: "run-1", toolId: "retrieval-tool" },
+      {
+        type: "run.completed",
+        runId: "run-1",
+        outcome: "answered",
+        cost: 0.12,
+        promptTokens: 20,
+        completionTokens: 8,
+        queueMs: 3.5,
+      },
+    ]);
+  });
 
 
   it("rejects a new reranker success event without required telemetry dimensions", async () => {

@@ -363,6 +363,7 @@ function extractRunMetrics(): {
     retrievalAttempts: 0,
     retrievalMs: 0,
     generationMs: 0,
+    capacity: {},
     tools: { attempted: 0, succeeded: 0, failed: 0 },
     toolTelemetryPresent: false,
     toolTelemetryMalformed: false,
@@ -873,18 +874,16 @@ function reviewedCaseViolations(cases: readonly EvaluationCase[]): string[] {
     }
     seen.add(evaluationCase.id);
     counts[evaluationCase.category] += 1;
-    const expectedSources = evaluationCase.expectedSourceIds.length;
-    if (new Set(evaluationCase.expectedSourceIds).size !== evaluationCase.expectedSourceIds.length) {
+    const expectedSourceIds = evaluationCase.expectedSourceIds;
+    const forbiddenSourceIds = evaluationCase.forbiddenSourceIds ?? [];
+    const expectedSources = expectedSourceIds.length;
+    if (new Set(expectedSourceIds).size !== expectedSourceIds.length) {
       violations.push(`reviewed case ${evaluationCase.id} has duplicate expected source mappings`);
     }
-    if (new Set(evaluationCase.forbiddenSourceIds).size !== evaluationCase.forbiddenSourceIds.length) {
+    if (new Set(forbiddenSourceIds).size !== forbiddenSourceIds.length) {
       violations.push(`reviewed case ${evaluationCase.id} has duplicate forbidden source mappings`);
     }
-    if (
-      evaluationCase.expectedSourceIds.some((sourceId) =>
-        evaluationCase.forbiddenSourceIds.includes(sourceId),
-      )
-    ) {
+    if (expectedSourceIds.some((sourceId) => forbiddenSourceIds.includes(sourceId))) {
       violations.push(`reviewed case ${evaluationCase.id} has overlapping source mappings`);
     }
     const valid =

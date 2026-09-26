@@ -14,6 +14,9 @@ const eventTypes = [
   "suggestions.completed",
   "run.completed",
   "run.failed",
+  "tool.started",
+  "tool.completed",
+  "tool.failed",
 ] as const;
 
 const envelopeSchema = z
@@ -120,6 +123,17 @@ const completedPayloadSchema = z
   .object({
     runId: z.string().min(1),
     outcome: z.enum(["answered", "insufficient-evidence", "retrieval-unavailable", "failed"]),
+    cost: z.number().finite().nonnegative().optional(),
+    promptTokens: z.number().int().nonnegative().optional(),
+    completionTokens: z.number().int().nonnegative().optional(),
+    queueMs: z.number().finite().nonnegative().optional(),
+  })
+  .strict();
+const toolPayloadSchema = z
+  .object({
+    runId: z.string().min(1),
+    toolId: z.string().min(1).max(200),
+    code: z.string().min(1).optional(),
   })
   .strict();
 
@@ -216,7 +230,28 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
     }
     case "run.completed": {
       const payload = requireRunId(completedPayloadSchema.parse(envelope.payload));
-      return { type: envelope.eventType, runId: envelope.runId, outcome: payload.outcome };
+      return {
+        type: envelope.eventType,
+        runId: envelope.runId,
+        outcome: payload.outcome,
+        ...(payload.cost === undefined ? {} : { cost: payload.cost }),
+        ...(payload.promptTokens === undefined ? {} : { promptTokens: payload.promptTokens }),
+        ...(payload.completionTokens === undefined
+          ? {}
+          : { completionTokens: payload.completionTokens }),
+        ...(payload.queueMs === undefined ? {} : { queueMs: payload.queueMs }),
+      };
+    }
+    case "tool.started":
+    case "tool.completed":
+    case "tool.failed": {
+      const payload = requireRunId(toolPayloadSchema.parse(envelope.payload));
+      return {
+        type: envelope.eventType,
+        runId: envelope.runId,
+        toolId: payload.toolId,
+        ...(payload.code === undefined ? {} : { code: payload.code }),
+      };
     }
     case "run.failed": {
       const payload = requireRunId(codePayloadSchema.parse(envelope.payload));

@@ -77,6 +77,7 @@ export type AgentEvent =
       completionTokens?: number;
       queueMs?: number;
     }
+  | { type: "run.failed"; runId: string; code: string }
   | {
       type: "tool.started" | "tool.completed" | "tool.failed";
       runId: string;
