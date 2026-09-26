@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
-
-from app.agent.runner import LangGraphAgentRunner
+from app.agent.runner import LangGraphAgentRunner, create_grounding_prompt
 from app.agent.types import (
     AgentMessage,
     AgentTurnInput,
@@ -135,6 +134,25 @@ def grounded_bundle() -> GroundedBundle:
             retrieval_config_version="rag-v1",
         ),
     )
+
+def test_grounding_prompt_bounds_evidence_before_model_consumption() -> None:
+    tail = "tail-that-must-not-reach-the-model"
+    grounding = grounded_bundle()
+    bounded = replace(
+        grounding,
+        context=(
+            '<retrieved-passages corpus-revision="rev-1">\n'
+            + "x" * 60_000
+            + tail
+            + "\n</retrieved-passages>"
+        ),
+    )
+
+    prompt = create_grounding_prompt(bounded)
+
+    assert tail not in prompt["evidence"]
+    assert "</retrieved-passages>" in prompt["evidence"]
+
 
 
 def insufficient_bundle(query: str = "passage") -> InsufficientEvidenceBundle:

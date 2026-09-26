@@ -154,7 +154,21 @@ describe("createGroundingPrompt", () => {
     expect(prompt.system).not.toContain(instructionLikeId);
     expect(prompt.evidence).toContain(JSON.stringify(instructionLikeId));
   });
+  it("bounds the evidence envelope again before model consumption", () => {
+    const tail = "tail-that-must-not-reach-the-model";
+    const grounding: GroundedBundle = {
+      ...groundedBundle,
+      context: `<retrieved-passages corpus-revision="corpus-2026-09-18">\n${"x".repeat(60_000)}${tail}\n</retrieved-passages>`,
+    };
+
+    const prompt = createGroundingPrompt(grounding);
+
+    expect(prompt.evidence).not.toContain(tail);
+    expect(prompt.evidence).toContain("</retrieved-passages>");
+  });
 });
+
+
 
 describe("createAiSdkAgentTurnRunner", () => {
   it("answers a direct greeting without retrieving", async () => {

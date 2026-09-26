@@ -10,6 +10,8 @@ import type {
   RerankerFallbackReason,
 } from "@/lib/rag/types";
 
+const DEFAULT_MAX_PARENT_CONTEXT_CHARS = 1_600;
+
 function escapeXml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -57,36 +59,84 @@ async function rerankWithTimeout(
     clearTimeout(timeout);
   }
 }
-
-function addParentContext(passage: GroundingPassage): GroundingPassage {
+function addParentContext(
+  passage: GroundingPassage,
+  maxParentContextChars: number,
+): GroundingPassage {
   if (passage.parentText === undefined) return passage;
+  const parentText = passage.parentText.slice(0, maxParentContextChars);
+  if (parentText.length === 0 || passage.text === parentText) return passage;
+  const prefix = `${parentText}\n\n`;
+  if (passage.text.startsWith(prefix)) return passage;
   return {
     ...passage,
-    text: `${passage.parentText}\n\n${passage.text}`,
+    text: `${parentText}\n\n${passage.text}`,
+    parentText,
   };
 }
 
-function expandByParent(passages: GroundingPassage[]): GroundingPassage[] {
+function withoutParentContext(passage: GroundingPassage): GroundingPassage {
+  if (passage.parentText === undefined) return passage;
+  const prefix = `${passage.parentText}\n\n`;
+  if (!passage.text.startsWith(prefix)) return passage;
+  return {
+    ...passage,
+    text: passage.text.slice(prefix.length),
+  };
+}
+
+function expandByParent(
+  passages: GroundingPassage[],
+  maxParentContextChars: number,
+): GroundingPassage[] {
   const groups = new Map<string, GroundingPassage[]>();
   for (const passage of passages) {
-    if (passage.parentId === undefined) continue;
-    const group = groups.get(passage.parentId) ?? [];
+    if (
+      passage.parentId === undefined ||
+      passage.parentText === undefined ||
+      passage.section === undefined ||
+      passage.sourceVersion === undefined
+    ) {
+      continue;
+    }
+    const key = [
+      passage.source,
+      passage.sourceVersion,
+      passage.section,
+      passage.parentId,
+      passage.parentText,
+    ].join("\u0000");
+    const group = groups.get(key) ?? [];
     group.push(passage);
-    groups.set(passage.parentId, group);
+    groups.set(key, group);
   }
 
   const expanded: GroundingPassage[] = [];
   const seenParents = new Set<string>();
   for (const passage of passages) {
-    if (passage.parentId === undefined) {
+    if (
+      passage.parentId === undefined ||
+      passage.parentText === undefined ||
+      passage.section === undefined ||
+      passage.sourceVersion === undefined
+    ) {
       expanded.push(passage);
       continue;
     }
-    if (seenParents.has(passage.parentId)) continue;
-    seenParents.add(passage.parentId);
+    const key = [
+      passage.source,
+      passage.sourceVersion,
+      passage.section,
+      passage.parentId,
+      passage.parentText,
+    ].join("\u0000");
+    if (seenParents.has(key)) continue;
+    seenParents.add(key);
     expanded.push(
-      ...(groups.get(passage.parentId) ?? [passage]).map((candidate, index) =>
-        index === 0 ? addParentContext(candidate) : candidate,
+      ...(groups.get(key) ?? [passage]).map((candidate, index) =>
+        index === 0
+          ? addParentContext(candidate, maxParentContextChars)
+          : candidate,
       ),
     );
   }
@@ -98,6 +148,7 @@ function selectPassages(
   minScore: number,
   acceptedTopK: number,
   maxContextChars: number,
+  maxParentContextChars: number,
   corpusRevision: string,
   hierarchyExpansion: boolean,
   preserveOrder: boolean,
@@ -119,8 +170,9 @@ function selectPassages(
     seenIds.add(passage.id);
     unique.push(passage);
   }
-
-  const ordered = hierarchyExpansion ? expandByParent(unique) : unique;
+  const ordered = hierarchyExpansion
+    ? expandByParent(unique, maxParentContextChars)
+    : unique;
   const header = `<retrieved-passages corpus-revision="${escapeXml(corpusRevision)}">`;
   const footer = "</retrieved-passages>";
   let contextLength = header.length + 1 + footer.length;
@@ -129,13 +181,33 @@ function selectPassages(
 
   for (const passage of ordered) {
     if (passages.length >= acceptedTopK) break;
-    const formatted = formatPassage(passage);
+    let candidate = passage;
+    let formatted = formatPassage(candidate);
     const separatorLength = 1;
     if (contextLength + separatorLength + formatted.length > maxContextChars) {
-      break;
+      const flat = withoutParentContext(passage);
+      const flatFormatted = formatPassage(flat);
+      if (
+        passage.parentText !== undefined &&
+        contextLength + separatorLength + flatFormatted.length <= maxContextChars
+      ) {
+        const parentBudget = Math.max(
+          0,
+          maxContextChars -
+            contextLength -
+            separatorLength -
+            flatFormatted.length -
+            2,
+        );
+        candidate = addParentContext(flat, parentBudget);
+        formatted = formatPassage(candidate);
+      }
+      if (contextLength + separatorLength + formatted.length > maxContextChars) {
+        break;
+      }
     }
     contextLength += separatorLength + formatted.length;
-    passages.push(passage);
+    passages.push(candidate);
     formattedPassages.push(formatted);
   }
 
@@ -351,6 +423,7 @@ export async function retrieve(
     config.RAG_MIN_SCORE,
     config.RAG_ACCEPTED_TOP_K,
     config.RAG_MAX_CONTEXT_CHARS,
+    config.RAG_MAX_PARENT_CONTEXT_CHARS ?? DEFAULT_MAX_PARENT_CONTEXT_CHARS,
     config.PINECONE_CORPUS_REVISION,
     config.RAG_HIERARCHY_EXPANSION,
     rerankerUsed,

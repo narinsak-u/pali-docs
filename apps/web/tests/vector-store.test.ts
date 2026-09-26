@@ -10,6 +10,7 @@ vi.mock("@/lib/config/rag", () => ({
   getRagConfig: vi.fn(() => ({
     PINECONE_NAMESPACE: "",
     PINECONE_CORPUS_REVISION: "corpus-2026-09-18",
+    RAG_MAX_PARENT_CONTEXT_CHARS: 16,
   })),
 }));
 
@@ -90,6 +91,35 @@ describe("queryPinecone", () => {
       },
     ]);
   });
+
+  it("bounds parent context while consuming published metadata", async () => {
+    const mockQuery = vi.fn().mockResolvedValue({
+      matches: [
+        {
+          id: "child",
+          score: 0.9,
+          metadata: {
+            text: "child text",
+            source: "part-1/chapter-1",
+            sourceVersion: "source-version-a",
+            title: "บทที่ 1",
+            corpusRevision: "corpus-2026-09-18",
+            section: "section-a",
+            parentId: "parent-a",
+            parentText: "parent context that is much too long",
+          },
+        },
+      ],
+    });
+    mockedNamespace.mockReturnValue({ query: mockQuery });
+
+    await expect(queryPinecone([0.1], 3)).resolves.toEqual([
+      expect.objectContaining({
+        parentText: "parent context t",
+      }),
+    ]);
+  });
+
   it("rejects a match with missing source version metadata", async () => {
     const mockQuery = vi.fn().mockResolvedValue({
       matches: [

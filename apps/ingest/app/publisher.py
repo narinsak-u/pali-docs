@@ -98,6 +98,7 @@ def _chunk_metadata(
     *,
     embedding_model: str,
     embedding_input_type: str,
+    max_parent_context_chars: int,
 ) -> dict[str, object]:
     acl = chunk.acl_metadata
     if not isinstance(acl, Mapping) or not acl:
@@ -108,8 +109,11 @@ def _chunk_metadata(
         raise PublishError(f"chunk {chunk.id} is missing parent identity")
     if not chunk.parent_text or not chunk.parent_text.strip():
         raise PublishError(f"chunk {chunk.id} is missing parent_text")
+    if max_parent_context_chars < 1:
+        raise PublishError("max_parent_context_chars must be positive")
     if chunk.chunking_policy is None:
         raise PublishError(f"chunk {chunk.id} is missing chunking policy")
+    bounded_parent_text = chunk.parent_text[:max_parent_context_chars]
     expected_id = _chunk_id(
         chunk.source_id,
         chunk.source_version,
@@ -147,7 +151,7 @@ def _chunk_metadata(
             ),
         }
     )
-    metadata["parentText"] = _metadata_value(chunk.parent_text, "parentText")
+    metadata["parentText"] = _metadata_value(bounded_parent_text, "parentText")
     return metadata
 
 def _upserted_count(response: object) -> int:
@@ -314,6 +318,7 @@ class PineconePublisher:
                 revision,
                 embedding_model=self.settings.embedding_model,
                 embedding_input_type=self.settings.embedding_input_type,
+                max_parent_context_chars=self.settings.max_parent_context_chars,
             )
             for chunk in chunk_list
         ]

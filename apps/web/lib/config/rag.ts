@@ -24,6 +24,12 @@ const ragEnvSchema = z.object({
     .min(1000)
     .max(50000)
     .default(12000),
+  RAG_MAX_PARENT_CONTEXT_CHARS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(12000)
+    .default(1600),
 });
 
 export type RagConfig = z.infer<typeof ragEnvSchema>;
@@ -37,6 +43,7 @@ const DENSE_RAG_DEFAULTS = {
   RAG_RERANKER_MAX_CANDIDATES: "20",
   RAG_RERANKER_TIMEOUT_MS: "100",
   RAG_MAX_CONTEXT_CHARS: "12000",
+  RAG_MAX_PARENT_CONTEXT_CHARS: "1600",
 } as const;
 
 export function getRagConfig(env: NodeJS.ProcessEnv = process.env): RagConfig {

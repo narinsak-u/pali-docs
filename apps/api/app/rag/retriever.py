@@ -1,10 +1,10 @@
 from __future__ import annotations
-
 import asyncio
 import inspect
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from numbers import Real
 from typing import Any
 
@@ -26,6 +26,8 @@ from .reranker import rerank_candidates
 EmbeddingFn = Callable[[str], Any]
 QueryFn = Callable[[Sequence[float], int, str, Mapping[str, object] | None], Any]
 RerankFn = Callable[[str, list[GroundingPassage], int], Any]
+
+_DEFAULT_MAX_PARENT_CONTEXT_CHARS = 1_600
 
 
 class RetrievalIntegrityError(ValueError):
@@ -78,10 +80,18 @@ def _format_passage(passage: GroundingPassage) -> str:
         f"{source_version} "
         f'title="{_escape_xml(passage.title)}"{section}{parent_id}>\n'
         f"{_escape_xml(passage.text)}\n</passage>"
-    )
-
-def _add_parent_context(passage: GroundingPassage) -> GroundingPassage:
+)
+def _add_parent_context(
+    passage: GroundingPassage, max_parent_context_chars: int
+) -> GroundingPassage:
     if passage.parent_text is None:
+        return passage
+    parent_text = passage.parent_text[:max_parent_context_chars]
+    if not parent_text or passage.text == parent_text:
+        return passage
+    child_text = passage.text
+    prefix = f"{parent_text}\n\n"
+    if child_text.startswith(prefix):
         return passage
     return GroundingPassage(
         id=passage.id,
@@ -90,32 +100,69 @@ def _add_parent_context(passage: GroundingPassage) -> GroundingPassage:
         source_version=passage.source_version,
         section=passage.section,
         parent_id=passage.parent_id,
-        text=f"{passage.parent_text}\n\n{passage.text}",
+        text=f"{parent_text}\n\n{child_text}",
         score=passage.score,
-        parent_text=passage.parent_text,
+        parent_text=parent_text,
     )
 
 
-def _expand_by_parent(passages: list[GroundingPassage]) -> list[GroundingPassage]:
-    groups: dict[str, list[GroundingPassage]] = {}
-    for passage in passages:
-        if passage.parent_id is None:
-            continue
-        groups.setdefault(passage.parent_id, []).append(passage)
+def _without_parent_context(passage: GroundingPassage) -> GroundingPassage:
+    if passage.parent_text is None:
+        return passage
+    prefix = f"{passage.parent_text}\n\n"
+    if not passage.text.startswith(prefix):
+        return passage
+    return replace(passage, text=passage.text[len(prefix) :])
 
-    expanded: list[GroundingPassage] = []
-    seen_parents: set[str] = set()
+def _expand_by_parent(
+    passages: list[GroundingPassage], max_parent_context_chars: int
+) -> list[GroundingPassage]:
+    groups: dict[
+        tuple[str, str | None, str | None, str, str],
+        list[GroundingPassage],
+    ] = {}
     for passage in passages:
-        parent_id = passage.parent_id
-        if parent_id is None:
+        if (
+            passage.parent_id is None
+            or passage.parent_text is None
+            or passage.section is None
+            or passage.source_version is None
+        ):
+            continue
+        key = (
+            passage.source,
+            passage.source_version,
+            passage.section,
+            passage.parent_id,
+            passage.parent_text,
+        )
+        groups.setdefault(key, []).append(passage)
+
+    seen_parents: set[tuple[str, str | None, str | None, str, str]] = set()
+    for passage in passages:
+        if (
+            passage.parent_id is None
+            or passage.parent_text is None
+            or passage.section is None
+            or passage.source_version is None
+        ):
             expanded.append(passage)
             continue
-        if parent_id in seen_parents:
+        key = (
+            passage.source,
+            passage.source_version,
+            passage.section,
+            passage.parent_id,
+            passage.parent_text,
+        )
+        if key in seen_parents:
             continue
-        seen_parents.add(parent_id)
+        seen_parents.add(key)
         expanded.extend(
-            _add_parent_context(candidate) if index == 0 else candidate
-            for index, candidate in enumerate(groups.get(parent_id, [passage]))
+            _add_parent_context(candidate, max_parent_context_chars)
+            if index == 0
+            else candidate
+            for index, candidate in enumerate(groups.get(key, [passage]))
         )
     return expanded
 
@@ -198,7 +245,7 @@ class PineconeRetriever:
             )
 
         try:
-            candidates = self._passages(result)
+            candidates = self._passages(result, access_scope)
         except RetrievalIntegrityError:
             return UnavailableBundle(
                 status="unavailable",
@@ -375,14 +422,28 @@ class PineconeRetriever:
         if isinstance(matches, Sequence) and not isinstance(matches, (str, bytes)):
             return matches
         return ()
-    def _passages(self, result: object) -> list[GroundingPassage]:
+    def _passages(
+        self,
+        result: object,
+        access_scope: Mapping[str, object] | None = None,
+    ) -> list[GroundingPassage]:
         revision = self.settings.PINECONE_CORPUS_REVISION
+        max_parent_context_chars = getattr(
+            self.settings,
+            "RAG_MAX_PARENT_CONTEXT_CHARS",
+            _DEFAULT_MAX_PARENT_CONTEXT_CHARS,
+        )
         passages: list[GroundingPassage] = []
         malformed_score = False
         for match in self._matches(result):
             match_id = _non_empty_string(_value(match, "id"))
             metadata = _value(match, "metadata")
             if not isinstance(metadata, Mapping) or match_id is None:
+                continue
+            if access_scope is not None and any(
+                metadata.get(key) != expected
+                for key, expected in access_scope.items()
+            ):
                 continue
 
             text = _non_empty_string(metadata.get("text"))
@@ -406,12 +467,10 @@ class PineconeRetriever:
                     raw_source_id is not None
                     and (source_id is None or source_id != source)
                 )
-                or (
-                    self.settings.RAG_HIERARCHY_EXPANSION
-                    and (section is None or parent_id is None or parent_text is None)
-                )
             ):
                 continue
+            if parent_text is not None:
+                parent_text = parent_text[:max_parent_context_chars]
 
             score = _value(match, "score")
             if isinstance(score, bool) or not isinstance(score, Real):
@@ -464,7 +523,16 @@ class PineconeRetriever:
             seen_ids.add(passage.id)
             unique.append(passage)
 
-        ordered = _expand_by_parent(unique) if config.RAG_HIERARCHY_EXPANSION else unique
+        max_parent_context_chars = getattr(
+            config,
+            "RAG_MAX_PARENT_CONTEXT_CHARS",
+            _DEFAULT_MAX_PARENT_CONTEXT_CHARS,
+        )
+        ordered = (
+            _expand_by_parent(unique, max_parent_context_chars)
+            if config.RAG_HIERARCHY_EXPANSION
+            else unique
+        )
 
 
         header = (
@@ -479,11 +547,30 @@ class PineconeRetriever:
         for passage in ordered:
             if len(accepted) >= config.RAG_ACCEPTED_TOP_K:
                 break
-            rendered = _format_passage(passage)
+            candidate = passage
+            rendered = _format_passage(candidate)
             if context_length + 1 + len(rendered) > config.RAG_MAX_CONTEXT_CHARS:
-                break
+                flat = _without_parent_context(passage)
+                flat_rendered = _format_passage(flat)
+                if (
+                    passage.parent_text is not None
+                    and context_length + 1 + len(flat_rendered)
+                    <= config.RAG_MAX_CONTEXT_CHARS
+                ):
+                    parent_budget = max(
+                        0,
+                        config.RAG_MAX_CONTEXT_CHARS
+                        - context_length
+                        - 1
+                        - len(flat_rendered)
+                        - 2,
+                    )
+                    candidate = _add_parent_context(flat, parent_budget)
+                    rendered = _format_passage(candidate)
+                if context_length + 1 + len(rendered) > config.RAG_MAX_CONTEXT_CHARS:
+                    break
             context_length += 1 + len(rendered)
-            accepted.append(passage)
+            accepted.append(candidate)
             formatted.append(rendered)
 
         if not accepted:

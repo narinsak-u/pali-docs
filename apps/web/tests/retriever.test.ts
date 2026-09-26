@@ -144,14 +144,25 @@ describe("retrieve", () => {
       RAG_ACCEPTED_TOP_K: 2,
     });
     const child = Object.assign(passage("child", 0.9), {
+      source: "part-1/guide",
+      sourceVersion: "source-version-1",
+      section: "section-1",
       parentId: "parent-1",
       parentText: "section context",
     });
     const sibling = Object.assign(passage("sibling", 0.71), {
+      source: "part-1/guide",
+      sourceVersion: "source-version-1",
+      section: "section-1",
       parentId: "parent-1",
+      parentText: "section context",
     });
     const unrelated = Object.assign(passage("unrelated", 0.8), {
+      source: "part-1/guide",
+      sourceVersion: "source-version-1",
+      section: "section-1",
       parentId: "parent-2",
+      parentText: "other context",
     });
     mockedQuery.mockResolvedValue([child, sibling, unrelated]);
 
@@ -164,6 +175,82 @@ describe("retrieve", () => {
     expect(result.status === "grounded" && result.context).toContain(
       "section context",
     );
+  });
+
+  it("keeps a flat child when hierarchy metadata is unavailable", async () => {
+    Object.assign(mockedConfig, {
+      RAG_HIERARCHY_EXPANSION: true,
+    });
+    const child = passage("child", 0.9);
+    mockedQuery.mockResolvedValue([child]);
+
+    const result = await retrieve({ query: "dhamma", attempt: 0 });
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages).toEqual([child]);
+    expect(result.status === "grounded" && result.citations).toEqual([
+      {
+        id: "child",
+        source: child.source,
+        title: child.title,
+      },
+    ]);
+  });
+
+  it("truncates expanded parent context to fit the context budget", async () => {
+    Object.assign(mockedConfig, {
+      RAG_HIERARCHY_EXPANSION: true,
+      RAG_MAX_CONTEXT_CHARS: 1_200,
+    });
+    const child = passage("child", 0.9, {
+      text: "child evidence",
+      parentId: "parent-1",
+      parentText: "parent context ".repeat(500),
+    });
+    mockedQuery.mockResolvedValue([child]);
+
+    const result = await retrieve({ query: "dhamma", attempt: 0 });
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.passages).toHaveLength(1);
+    expect(result.status === "grounded" && result.context.length).toBeLessThanOrEqual(1_200);
+    expect(result.status === "grounded" && result.context).toContain("child evidence");
+    expect(
+      result.status === "grounded"
+        ? (result.context.match(/parent context/g)?.length ?? 0)
+        : 0,
+    ).toBeLessThan(500);
+  });
+
+  it("deduplicates parent context without projecting a parent citation", async () => {
+    Object.assign(mockedConfig, {
+      RAG_HIERARCHY_EXPANSION: true,
+    });
+    const child = passage("child", 0.9, {
+      source: "part-1/guide",
+      sourceVersion: "source-version-1",
+      section: "section-1",
+      parentId: "parent-1",
+      parentText: "shared parent context",
+    });
+    const sibling = passage("sibling", 0.8, {
+      source: "part-1/guide",
+      sourceVersion: "source-version-1",
+      section: "section-1",
+      parentId: "parent-1",
+      parentText: "shared parent context",
+    });
+    mockedQuery.mockResolvedValue([child, sibling]);
+
+    const result = await retrieve({ query: "dhamma", attempt: 0 });
+
+    expect(result.status).toBe("grounded");
+    expect(result.status === "grounded" && result.citations.map(({ id }) => id)).toEqual([
+      "child",
+      "sibling",
+    ]);
+    expect(result.status === "grounded" && result.citations.map(({ id }) => id)).not.toContain("parent-1");
+    expect(result.status === "grounded" && result.context.match(/shared parent context/g)).toHaveLength(1);
   });
 
   it("reranks only the configured prefix and preserves the dense suffix", async () => {

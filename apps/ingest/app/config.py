@@ -18,6 +18,7 @@ class IngestSettings:
     schema_version: str = "v1"
     chunking_version: str = "hierarchical-v1"
     max_chunk_chars: int = 1_600
+    max_parent_context_chars: int = 1_600
     overlap_chars: int = 200
     embedding_model: str = "llama-text-embed-v2"
     embedding_input_type: str = "passage"
@@ -35,6 +36,8 @@ class IngestSettings:
     def __post_init__(self) -> None:
         if self.max_chunk_chars < 1:
             raise ValueError("max_chunk_chars must be positive")
+        if self.max_parent_context_chars < 1:
+            raise ValueError("max_parent_context_chars must be positive")
         if not 0 <= self.overlap_chars < self.max_chunk_chars:
             raise ValueError("overlap_chars must be non-negative and smaller than max_chunk_chars")
         if self.source_version_chars < 1:
@@ -84,6 +87,9 @@ class IngestSettings:
             schema_version=text("INGEST_SCHEMA_VERSION", defaults.schema_version),
             chunking_version=text("INGEST_CHUNKING_VERSION", defaults.chunking_version),
             max_chunk_chars=integer("INGEST_MAX_CHUNK_CHARS", defaults.max_chunk_chars),
+            max_parent_context_chars=integer(
+                "INGEST_MAX_PARENT_CONTEXT_CHARS", defaults.max_parent_context_chars
+            ),
             overlap_chars=integer("INGEST_OVERLAP_CHARS", defaults.overlap_chars),
             embedding_model=text("INGEST_EMBEDDING_MODEL", defaults.embedding_model),
             embedding_input_type=text(

@@ -205,12 +205,16 @@ async def test_retriever_passes_scope_and_applies_accepted_bound() -> None:
             namespace=namespace,
             metadata_filter=metadata_filter,
         )
+        scoped = [
+            match("high", score=0.95),
+            match("middle", score=0.8),
+            match("low", score=0.7),
+        ]
+        for item in scoped:
+            item["metadata"]["volume"] = "1"  # type: ignore[index]
+            item["metadata"]["language"] = "pali"  # type: ignore[index]
         return {
-            "matches": [
-                match("high", score=0.95),
-                match("middle", score=0.8),
-                match("low", score=0.7),
-            ]
+            "matches": scoped,
         }
 
     retriever = PineconeRetriever(
@@ -510,6 +514,90 @@ async def test_retriever_falls_back_to_dense_order_when_reranker_fails() -> None
     assert result.retrieval_metrics.retrieval_config_version == "rag-v1"
     assert result.retrieval_metrics.reranker_latency_ms is not None
     assert result.retrieval_metrics.reranker_latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_retriever_filters_hierarchy_to_requested_scope() -> None:
+    public = match("public")
+    private = match("private")
+    public["metadata"]["visibility"] = "public"  # type: ignore[index]
+    private["metadata"]["visibility"] = "private"  # type: ignore[index]
+
+    retriever = PineconeRetriever(
+        settings(RAG_HIERARCHY_EXPANSION=True),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": [public, private]},
+    )
+
+    result = await retriever.retrieve(
+        "query",
+        attempt=1,
+        access_scope={"visibility": "public"},
+    )
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == ["public"]
+
+
+@pytest.mark.asyncio
+async def test_retriever_falls_back_to_flat_child_without_hierarchy_metadata() -> None:
+    child = match("child")
+
+    retriever = PineconeRetriever(
+        settings(RAG_HIERARCHY_EXPANSION=True),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": [child]},
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == ["child"]
+    assert result.passages[0].parent_id is None
+    assert result.passages[0].text == "A grounded passage."
+
+
+@pytest.mark.asyncio
+async def test_retriever_truncates_parent_context_before_context_budget() -> None:
+    child = match("child", text="child evidence")
+    child["metadata"]["parentId"] = "parent-1"  # type: ignore[index]
+    child["metadata"]["parentText"] = "parent context " * 500  # type: ignore[index]
+
+    retriever = PineconeRetriever(
+        settings(RAG_HIERARCHY_EXPANSION=True, RAG_MAX_CONTEXT_CHARS=1_200),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": [child]},
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [passage.id for passage in result.passages] == ["child"]
+    assert len(result.context) <= 1_200
+    assert "child evidence" in result.context
+    assert result.context.count("parent context") < 500
+
+
+@pytest.mark.asyncio
+async def test_retriever_deduplicates_parent_context_and_projects_child_citations() -> None:
+    child = match("child", score=0.9)
+    sibling = match("sibling", score=0.8)
+    for item in (child, sibling):
+        item["metadata"]["parentId"] = "parent-1"  # type: ignore[index]
+        item["metadata"]["parentText"] = "shared parent context"  # type: ignore[index]
+
+    retriever = PineconeRetriever(
+        settings(RAG_HIERARCHY_EXPANSION=True, RAG_ACCEPTED_TOP_K=2),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": [child, sibling]},
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, GroundedBundle)
+    assert [citation.id for citation in result.citations] == ["child", "sibling"]
+    assert "parent-1" not in [citation.id for citation in result.citations]
+    assert result.context.count("shared parent context") == 1
 
 
 @pytest.mark.asyncio

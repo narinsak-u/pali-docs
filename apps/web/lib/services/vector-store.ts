@@ -38,7 +38,7 @@ export async function queryPinecone(
       ? metadata.parentId
       : undefined;
     const parentText = isNonEmptyString(metadata?.parentText)
-      ? metadata.parentText
+      ? metadata.parentText.slice(0, config.RAG_MAX_PARENT_CONTEXT_CHARS)
       : undefined;
     if (
       !isNonEmptyString(match.id) ||
@@ -50,9 +50,7 @@ export async function queryPinecone(
       !isNonEmptyString(metadata.corpusRevision) ||
       metadata.corpusRevision !== config.PINECONE_CORPUS_REVISION ||
       (metadata.sourceId !== undefined &&
-        (!isNonEmptyString(metadata.sourceId) || metadata.sourceId !== source)) ||
-      (config.RAG_HIERARCHY_EXPANSION === true &&
-        (section === undefined || parentId === undefined || parentText === undefined))
+        (!isNonEmptyString(metadata.sourceId) || metadata.sourceId !== source))
     ) {
       return [];
     }
