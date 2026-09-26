@@ -42,6 +42,7 @@ const retrievalCompletedPayloadSchema = z
     matchCount: z.number().int().nonnegative(),
     acceptedSourceIds: z.array(z.string().min(1)).optional(),
     acceptedProvenance: z.array(citationSchema).max(12).optional(),
+    corpusRevision: z.string().min(1).optional(),
     candidateCount: z.number().int().nonnegative().optional(),
     acceptedCount: z.number().int().nonnegative().optional(),
     hierarchyExpansion: z.boolean().optional(),
@@ -170,6 +171,9 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
         ...(payload.acceptedProvenance === undefined
           ? {}
           : { acceptedProvenance: payload.acceptedProvenance }),
+        ...(payload.corpusRevision === undefined
+          ? {}
+          : { corpusRevision: payload.corpusRevision }),
         ...(payload.candidateCount === undefined
           ? {}
           : { candidateCount: payload.candidateCount }),

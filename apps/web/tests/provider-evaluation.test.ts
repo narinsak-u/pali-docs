@@ -49,11 +49,22 @@ function runnerFor(
     toolFailure?: string;
     failure?: string;
     outcome?: "insufficient-evidence";
+    observedModel?: string;
+    observedServingRevision?: string;
   } = {},
 ): AgentTurnRunner {
   return {
     supportsAccessScope: true,
     supportsCostTelemetry: true,
+    observedCorpusRevision: "corpus-1",
+    ...(options.observedModel === undefined
+      ? {}
+      : {
+          observedServingMetadata: {
+            model: options.observedModel,
+            servingRevision: options.observedServingRevision ?? "observed-1",
+          },
+        }),
     async runTurn(input: AgentTurnInput, sink) {
       const sourceIds = options.source
         ? Array.isArray(options.source)
@@ -71,6 +82,7 @@ function runnerFor(
         type: "retrieval.completed",
         runId: input.runId,
         attempt: 1,
+        corpusRevision: "corpus-1",
         matchCount: 2,
         acceptedSourceIds: sourceIds,
         candidateCount: 2,
@@ -295,6 +307,8 @@ describe("provider comparison and promotion gates", () => {
         runPairedEvaluationCase({
           evaluationCase: reviewedCase,
           hosted: runnerFor("answer", {
+            observedModel: "hosted/model",
+            observedServingRevision: "hosted-1",
             source:
               reviewedCase.expectedOutcome === "insufficient-evidence"
                 ? undefined
@@ -307,6 +321,8 @@ describe("provider comparison and promotion gates", () => {
                 : undefined,
           }),
           local: runnerFor("answer", {
+            observedModel: "Qwen/Qwen3-8B",
+            observedServingRevision: "vllm-1",
             source:
               reviewedCase.expectedOutcome === "insufficient-evidence"
                 ? undefined
@@ -358,6 +374,37 @@ describe("provider comparison and promotion gates", () => {
         rollbackReady: true,
       }).promote,
     ).toBe(false);
+
+    const staleIndex = paired.map((item) => ({
+      ...item,
+      local: { ...item.local, observedCorpusRevision: "corpus-old" },
+    }));
+    expect(() => compareProviderEvaluations(staleIndex, passingThresholds)).toThrow(
+      "observed retrieval corpus revision mismatch",
+    );
+
+    const forgedIdentity = paired.map((item) => ({
+      ...item,
+      local: {
+        ...item.local,
+        observedServingMetadata: {
+          ...item.local.observedServingMetadata!,
+          model: "some/other-model",
+        },
+      },
+    }));
+    const forgedIdentityComparison = compareProviderEvaluations(forgedIdentity, passingThresholds);
+    const forgedIdentityDecision = decidePromotion({
+      comparison: forgedIdentityComparison,
+      reviewedCases,
+      productionBaseline,
+      rollbackReady: true,
+    });
+    expect(forgedIdentityDecision.promote).toBe(false);
+    expect(forgedIdentityDecision.reasons).toContain(
+      "local provider must use Qwen/Qwen3-8B for case reviewed-0",
+    );
+
     const invalidCases = {
       ...reviewedCases,
       cases: [
@@ -430,6 +477,7 @@ describe("provider comparison and promotion gates", () => {
           type: "retrieval.completed",
           runId: input.runId,
           attempt: 1,
+          corpusRevision: "corpus-1",
           matchCount: 1,
           acceptedSourceIds: ["source-1"],
           candidateCount: 1,

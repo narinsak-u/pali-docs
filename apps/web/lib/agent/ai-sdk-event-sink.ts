@@ -34,6 +34,13 @@ interface AgentUiWriter {
   write(part: AgentUiChunk): void;
 }
 
+export interface InternalToolEvent {
+  type: "tool.started" | "tool.completed" | "tool.failed";
+  runId: string;
+  toolId: string;
+  code?: string;
+}
+
 const RETRIEVAL_LABEL = "ค้นหาเอกสาร";
 
 function retrievalTaskId(runId: string, attempt: number): string {
@@ -44,7 +51,10 @@ function answerTextId(runId: string): string {
   return `${runId}:answer`;
 }
 
-export function createAiSdkEventSink(writer: AgentUiWriter): AgentEventSink {
+export function createAiSdkEventSink(
+  writer: AgentUiWriter,
+  options: { recordToolEvent?: (event: InternalToolEvent) => void } = {},
+): AgentEventSink {
   const activeRetrievalAttempts = new Map<string, number>();
   let terminated = false;
 
@@ -142,6 +152,17 @@ export function createAiSdkEventSink(writer: AgentUiWriter): AgentEventSink {
         writer.write({
           type: "data-suggestions",
           data: suggestionsPartSchema.parse({ suggestions: event.suggestions }),
+        });
+        break;
+      case "tool.started":
+      case "tool.completed":
+      case "tool.failed":
+        // Keep tool arguments/results private while recording lifecycle telemetry internally.
+        options.recordToolEvent?.({
+          type: event.type,
+          runId: event.runId,
+          toolId: event.toolId,
+          ...(event.code === undefined ? {} : { code: event.code }),
         });
         break;
       case "run.completed":

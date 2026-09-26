@@ -72,6 +72,13 @@ export interface ProviderTrace {
   accessScopeDigest: string;
   accessScope?: Record<string, string | number | boolean | string[]>;
   corpusRevision: string;
+  observedCorpusRevision?: string;
+  observedServingMetadata?: {
+    model: string;
+    servingRevision: string;
+    imageDigest?: string;
+    tokenizer?: string;
+  };
   model: string;
   servingRevision: string;
   endpoint?: string;
@@ -210,6 +217,8 @@ interface RunMetrics {
   toolEvents: NonNullable<ProviderTrace["toolEvents"]>;
   toolTelemetryPresent: boolean;
   toolTelemetryMalformed: boolean;
+  observedCorpusRevision?: string;
+  observedCorpusRevisionMismatch: boolean;
 }
 
 const SAFE_CODE: Record<string, true> = {
@@ -392,6 +401,7 @@ function extractRunMetrics(): {
     toolEvents: [],
     toolTelemetryPresent: false,
     toolTelemetryMalformed: false,
+    observedCorpusRevisionMismatch: false,
   };
   let generationStarted: number | undefined;
   const startedTools = new Set<string>();
@@ -413,6 +423,17 @@ function extractRunMetrics(): {
           const started = retrievalStarted.get(attempt);
           if (started !== undefined) metrics.retrievalMs += now - started;
           retrievalStarted.delete(attempt);
+          if (typeof event.corpusRevision === "string" && event.corpusRevision.trim()) {
+            if (
+              metrics.observedCorpusRevision !== undefined &&
+              metrics.observedCorpusRevision !== event.corpusRevision
+            ) {
+              metrics.observedCorpusRevisionMismatch = true;
+              metrics.observedCorpusRevision = undefined;
+            } else {
+              metrics.observedCorpusRevision = event.corpusRevision;
+            }
+          }
           const ids = Array.isArray(event.acceptedSourceIds) ? event.acceptedSourceIds : [];
           metrics.retrievedSourceIds = unique(
             metrics.retrievedSourceIds.concat(ids.filter((id): id is string => typeof id === "string")),
@@ -581,6 +602,17 @@ async function runProvider(
       ? {}
       : { accessScope: normalized.accessScope }),
     corpusRevision,
+    ...(metrics.observedCorpusRevisionMismatch
+      ? {}
+      : metrics.observedCorpusRevision === undefined && runner.observedCorpusRevision === undefined
+        ? {}
+        : {
+            observedCorpusRevision:
+              metrics.observedCorpusRevision ?? runner.observedCorpusRevision,
+          }),
+    ...(runner.observedServingMetadata === undefined
+      ? {}
+      : { observedServingMetadata: safeServingMetadata(runner.observedServingMetadata) }),
     ...model,
     outcome: actualOutcome,
     grounding: {
@@ -914,6 +946,14 @@ export function compareProviderEvaluations(
       throw new Error(`paired evaluation corpus revision mismatch for case ${item.caseId}`);
     }
     for (const trace of [item.hosted, item.local]) {
+      if (
+        trace.observedCorpusRevision !== undefined &&
+        trace.observedCorpusRevision !== trace.corpusRevision
+      ) {
+        throw new Error(`observed retrieval corpus revision mismatch for case ${item.caseId}`);
+      }
+    }
+    for (const trace of [item.hosted, item.local]) {
       const expected = trace.grounding.expectedSourceIds;
       const forbidden = trace.grounding.forbiddenSourceIds;
       if (unique(expected).length !== expected.length) {
@@ -1000,6 +1040,16 @@ const providerTraceSchema = z
     accessScopeDigest: z.string().min(1),
     accessScope: z.record(z.string(), accessScopeValueSchema).optional(),
     corpusRevision: z.string().min(1),
+    observedCorpusRevision: z.string().min(1).optional(),
+    observedServingMetadata: z
+      .object({
+        model: z.string().min(1),
+        servingRevision: z.string().min(1),
+        imageDigest: z.string().min(1).optional(),
+        tokenizer: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     model: z.string().min(1),
     servingRevision: z.string().min(1),
     endpoint: z.string().min(1).optional(),
@@ -1384,9 +1434,21 @@ export function decidePromotion(options: {
       }
       if (
         trace.corpusRevision !== cases.corpusRevision ||
-        trace.grounding.corpusRevision !== cases.corpusRevision
+        trace.grounding.corpusRevision !== cases.corpusRevision ||
+        trace.observedCorpusRevision !== cases.corpusRevision
       ) {
         reasons.push(`${provider} trace corpus lineage mismatch for case ${item.caseId}`);
+      }
+      const observedIdentity = trace.observedServingMetadata;
+      if (
+        observedIdentity === undefined ||
+        observedIdentity.model !== trace.model ||
+        observedIdentity.servingRevision !== trace.servingRevision
+      ) {
+        reasons.push(`${provider} trace serving identity is not runtime-authenticated for case ${item.caseId}`);
+      }
+      if (provider === "local" && observedIdentity?.model !== "Qwen/Qwen3-8B") {
+        reasons.push(`local provider must use Qwen/Qwen3-8B for case ${item.caseId}`);
       }
       if (
         JSON.stringify(trace.grounding.expectedSourceIds) !==

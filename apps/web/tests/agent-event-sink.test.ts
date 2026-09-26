@@ -174,6 +174,23 @@ describe("createAiSdkEventSink", () => {
     expect(writes.filter((part) => part.type === "data-outcome")).toHaveLength(1);
   });
 
+  it("records tool lifecycle internally without exposing tool payloads to UI", () => {
+    const { writer, writes } = createWriter();
+    const toolEvents: unknown[] = [];
+    const sink = createAiSdkEventSink(writer, {
+      recordToolEvent: (event) => toolEvents.push(event),
+    });
+
+    sink.emit({ type: "tool.started", runId: "run-tool", toolId: "private-tool" });
+    sink.emit({ type: "tool.failed", runId: "run-tool", toolId: "private-tool", code: "denied" });
+
+    expect(toolEvents).toEqual([
+      { type: "tool.started", runId: "run-tool", toolId: "private-tool" },
+      { type: "tool.failed", runId: "run-tool", toolId: "private-tool", code: "denied" },
+    ]);
+    expect(writes).toEqual([]);
+  });
+
   it("rejects duplicate terminal events and events after termination", () => {
     const { writer, writes } = createWriter();
     const sink = createAiSdkEventSink(writer);

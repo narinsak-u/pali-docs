@@ -12,6 +12,7 @@ export interface AgentTraceRecord {
   matchCount?: number;
   outcome?: AgentTurnOutcome;
   code?: string;
+  toolId?: string;
   durationMs?: number;
 }
 
@@ -102,6 +103,16 @@ export function createStructuredTraceSink(
         case "citations.completed":
         case "suggestions.completed":
           record(base);
+          break;
+        case "tool.started":
+        case "tool.completed":
+        case "tool.failed":
+          // Record lifecycle metadata only; arguments and results are never persisted.
+          record({
+            ...base,
+            toolId: event.toolId,
+            ...(event.code === undefined ? {} : { code: event.code }),
+          });
           break;
         case "run.completed": {
           const startedAt = runStartedAt.get(event.runId);

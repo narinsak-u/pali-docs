@@ -40,6 +40,7 @@ export type AgentEvent =
       matchCount: number;
       acceptedSourceIds?: string[];
       acceptedProvenance?: Citation[];
+      corpusRevision?: string;
       candidateCount?: number;
       acceptedCount?: number;
       hierarchyExpansion?: boolean;
@@ -91,6 +92,13 @@ export interface AgentEventSink {
 export interface AgentTurnRunner {
   supportsAccessScope?: boolean;
   supportsCostTelemetry?: boolean;
+  observedCorpusRevision?: string;
+  observedServingMetadata?: {
+    model: string;
+    servingRevision: string;
+    imageDigest?: string;
+    tokenizer?: string;
+  };
   runTurn(
     input: AgentTurnInput,
     sink: AgentEventSink,

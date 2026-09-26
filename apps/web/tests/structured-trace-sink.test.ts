@@ -114,6 +114,29 @@ describe("createStructuredTraceSink", () => {
     expect(serialized).not.toContain("SECRET TITLE");
   });
 
+  it("records tool lifecycle metadata without arguments or results", () => {
+    const records: AgentTraceRecord[] = [];
+    const sink = createStructuredTraceSink((record) => records.push(record));
+
+    sink.emit({ type: "tool.started", runId: "run-tool", toolId: "private-tool" });
+    sink.emit({ type: "tool.completed", runId: "run-tool", toolId: "private-tool" });
+
+    expect(records).toEqual([
+      {
+        eventType: "tool.started",
+        runId: "run-tool",
+        timestamp: expect.any(Number),
+        toolId: "private-tool",
+      },
+      {
+        eventType: "tool.completed",
+        runId: "run-tool",
+        timestamp: expect.any(Number),
+        toolId: "private-tool",
+      },
+    ]);
+  });
+
   it("records failure codes and rejects records after a terminal event", () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000);
