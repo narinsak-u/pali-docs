@@ -270,6 +270,29 @@ describe("retrieve", () => {
     ]);
   });
 
+  it("classifies malformed reranker output as invalid output", async () => {
+    Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
+    mockedQuery.mockResolvedValue([
+      passage("term-match", 0.7, { text: "dhamma grammar" }),
+      passage("score-first", 0.9, { text: "grammar lesson" }),
+    ]);
+    const rerankCandidates = vi.fn(
+      async () => null as unknown as GroundingPassage[],
+    );
+
+    const result = await retrieve(
+      { query: "dhamma", attempt: 0 },
+      undefined,
+      { rerankCandidates },
+    );
+
+    expect(result.status).toBe("grounded");
+    expect(result.retrievalMetrics).toMatchObject({
+      rerankerUsed: false,
+      rerankerFallbackReason: "invalid-output",
+    });
+  });
+
   it("falls back when reranker rewrites validated passage content", async () => {
     Object.assign(mockedConfig, { RAG_RERANKER_ENABLED: true });
     mockedQuery.mockResolvedValue([

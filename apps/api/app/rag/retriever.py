@@ -363,6 +363,7 @@ class PineconeRetriever:
         matches = _value(result, "matches", ())
         if isinstance(matches, Sequence) and not isinstance(matches, (str, bytes)):
             return matches
+        return ()
     def _passages(self, result: object) -> list[GroundingPassage]:
         revision = self.settings.PINECONE_CORPUS_REVISION
         passages: list[GroundingPassage] = []

@@ -123,6 +123,22 @@ async def test_retriever_discards_missing_source_version_metadata() -> None:
     assert isinstance(result, InsufficientEvidenceBundle)
     assert result.passages == []
 
+
+
+@pytest.mark.asyncio
+async def test_retriever_treats_malformed_match_payload_as_insufficient_evidence() -> None:
+    retriever = PineconeRetriever(
+        settings=settings(),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": None},
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, InsufficientEvidenceBundle)
+    assert result.passages == []
+    assert result.retrieval_metrics is not None
+    assert result.retrieval_metrics.candidate_count == 0
 @pytest.mark.asyncio
 async def test_retriever_returns_unavailable_when_all_scores_are_malformed() -> None:
     retriever = PineconeRetriever(

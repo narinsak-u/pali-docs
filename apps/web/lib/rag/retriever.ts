@@ -39,7 +39,7 @@ async function rerankWithTimeout(
   timeoutMs: number,
   reranker: Reranker,
   signal?: AbortSignal,
-): Promise<GroundingPassage[]> {
+): Promise<unknown> {
   let timeoutReject: (reason?: unknown) => void = () => {};
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutReject = reject;
@@ -160,11 +160,48 @@ function toCitation(passage: GroundingPassage): Citation {
   };
 }
 
+function isRerankedPassage(value: unknown): value is GroundingPassage {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    !("id" in value) ||
+    !("score" in value) ||
+    !("text" in value) ||
+    !("source" in value) ||
+    !("title" in value)
+  ) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    typeof value.score === "number" &&
+    Number.isFinite(value.score) &&
+    typeof value.text === "string" &&
+    typeof value.source === "string" &&
+    typeof value.title === "string" &&
+    (!("sourceVersion" in value) ||
+      value.sourceVersion === undefined ||
+      typeof value.sourceVersion === "string") &&
+    (!("section" in value) ||
+      value.section === undefined ||
+      typeof value.section === "string") &&
+    (!("parentId" in value) ||
+      value.parentId === undefined ||
+      typeof value.parentId === "string") &&
+    (!("parentText" in value) ||
+      value.parentText === undefined ||
+      typeof value.parentText === "string")
+  );
+}
+
 function isValidReranked(
   candidates: GroundingPassage[],
-  reranked: GroundingPassage[],
+  reranked: unknown,
   maxCandidates: number,
-): boolean {
+): reranked is GroundingPassage[] {
+  if (!Array.isArray(reranked) || !reranked.every(isRerankedPassage)) {
+    return false;
+  }
   const expectedCount = Math.min(candidates.length, maxCandidates);
   if (reranked.length !== expectedCount) return false;
   const candidateIds = new Set(candidates.map(({ id }) => id));
@@ -258,7 +295,7 @@ export async function retrieve(
       0,
       config.RAG_RERANKER_MAX_CANDIDATES,
     );
-    const rerankerStartedAt = Date.now();
+    const rerankerStartedAt = performance.now();
     try {
       const reranked = await rerankWithTimeout(
         query,
@@ -268,7 +305,7 @@ export async function retrieve(
         dependencies.rerankCandidates ?? rerankCandidates,
         signal,
       );
-      rerankerLatencyMs = Date.now() - rerankerStartedAt;
+      rerankerLatencyMs = performance.now() - rerankerStartedAt;
       if (
         isValidReranked(
           boundedCandidates,
@@ -283,7 +320,7 @@ export async function retrieve(
         candidates = denseCandidates;
       }
     } catch (error: unknown) {
-      rerankerLatencyMs = Date.now() - rerankerStartedAt;
+      rerankerLatencyMs = performance.now() - rerankerStartedAt;
       signal?.throwIfAborted();
       rerankerFallbackReason =
         error instanceof Error && error.message === "reranker timed out"

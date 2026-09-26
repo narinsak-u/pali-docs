@@ -51,3 +51,23 @@
 - Reranker and retrieval configuration version values are explicit runtime contract values (`lexical-v1` and `rag-v1`); selecting production model/version identifiers remains an evaluation/rollout decision.
 - Full web/API/ingestion suites and Next.js compilation were intentionally not run per the Task 1 focused-validation requirement; the integration owner should run them after sibling hardening tasks land.
 - Existing untracked Python `__pycache__` directories were left untouched.
+
+## Review round 1 fix report
+
+- Preserved mixed-version stream compatibility by treating reranker events with only the legacy `rerankerUsed` field as legacy; strict telemetry completeness is applied when a new telemetry dimension is present.
+- Restored the FastAPI `_matches` empty-sequence fallback so malformed or missing Pinecone match collections produce the existing insufficient-evidence path.
+- Added runtime reranker output-shape validation in TypeScript; null, non-array, null-item, and invalid-content outputs use `invalid-output`, while provider exceptions retain `unavailable`.
+- Switched TypeScript reranker latency measurement from wall-clock `Date.now()` to monotonic `performance.now()`.
+- Restored explicit serialized evaluation-record privacy assertions for prompt text, answer text, and passage IDs.
+
+### Review fix verification
+
+- Initial regression tests were red for the legacy adapter event, malformed API match collection, and malformed web reranker output before implementation.
+- `bunx vitest run tests/langgraph-event-adapter.test.ts tests/retriever.test.ts tests/rag-evaluation.test.ts`
+  - **PASS** — 3 test files, 40 tests.
+- `./.venv/bin/pytest -q tests/test_retriever.py`
+  - **PASS** — 13 tests.
+
+- Final focused contract run after all fixes:
+  - Web Vitest: **PASS** — 6 test files, 68 tests.
+  - FastAPI pytest: **PASS** — 18 tests.

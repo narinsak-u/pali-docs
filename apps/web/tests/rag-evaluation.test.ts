@@ -365,6 +365,11 @@ describe("RAG evaluation records", () => {
       citationPrecision: 1,
       citationCompleteness: 1,
     });
+
+    const serialized = JSON.stringify(evaluationRecord);
+    expect(serialized).not.toContain("private user prompt");
+    expect(serialized).not.toContain("private answer body");
+    expect(serialized).not.toContain("vector-id");
   });
 
   it("measures an unsuccessful retrieval through terminal completion", async () => {

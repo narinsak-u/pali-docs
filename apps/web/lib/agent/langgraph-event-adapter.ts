@@ -54,6 +54,12 @@ const retrievalCompletedPayloadSchema = z
   .strict()
   .superRefine((payload, context) => {
     if (payload.rerankerUsed !== true) return;
+    const hasVersionedTelemetry =
+      payload.rerankerFallbackReason !== undefined ||
+      payload.rerankerLatencyMs !== undefined ||
+      payload.rerankerModelVersion !== undefined ||
+      payload.retrievalConfigVersion !== undefined;
+    if (!hasVersionedTelemetry) return;
     if (payload.rerankerFallbackReason !== null) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

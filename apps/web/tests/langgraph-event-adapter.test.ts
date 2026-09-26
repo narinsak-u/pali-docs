@@ -78,14 +78,31 @@ describe("LangGraph retrieval event contract", () => {
     });
     expect(JSON.stringify(emitted)).not.toContain("text");
   });
+  it("accepts legacy successful reranker events without telemetry additions", async () => {
+    const emitted = await consume([
+      envelope(0, "retrieval.completed", {
+        attempt: 1,
+        matchCount: 1,
+        rerankerUsed: true,
+      }),
+      envelope(1, "run.completed", { outcome: "answered" }),
+    ]);
 
-  it("rejects a reranker success event without required telemetry dimensions", async () => {
+    expect(emitted[0]).toMatchObject({
+      type: "retrieval.completed",
+      rerankerUsed: true,
+    });
+  });
+
+
+  it("rejects a new reranker success event without required telemetry dimensions", async () => {
     await expect(
       consume([
         envelope(0, "retrieval.completed", {
           attempt: 1,
           matchCount: 1,
           rerankerUsed: true,
+          rerankerFallbackReason: null,
         }),
         envelope(1, "run.completed", { outcome: "answered" }),
       ]),
