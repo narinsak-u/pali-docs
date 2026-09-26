@@ -271,11 +271,14 @@ describe("FastAPI runner", () => {
       expect(request.headers).toMatchObject({
         "Content-Type": "application/json",
         Authorization: "Bearer secret",
+        "X-Access-Scope": JSON.stringify({
+          tenant: "tenant-1",
+          authorization: "not-forwarded",
+        }),
       });
       expect(JSON.parse(String(request.body))).toEqual({
         runId: "run-1",
         corpusRevision: "corpus-1",
-        accessScope: { tenant: "tenant-1", authorization: "not-forwarded" },
         messages: [{ role: "user", content: "What is Pali?" }],
       });
       return streamResponse(events);

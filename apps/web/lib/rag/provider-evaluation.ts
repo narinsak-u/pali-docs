@@ -919,13 +919,46 @@ function reviewedCaseViolations(cases: readonly EvaluationCase[]): string[] {
   return violations;
 }
 
+function canonicalEvidence(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalEvidence);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalEvidence(item)]),
+    );
+  }
+  return value;
+}
+
+function verifiedComparison(value: unknown): ProviderComparison | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const candidate = value as { paired?: unknown; thresholds?: unknown };
+  try {
+    const recomputed = compareProviderEvaluations(
+      candidate.paired as readonly PairedEvaluation[],
+      candidate.thresholds as EvaluationThresholds,
+    );
+    return JSON.stringify(canonicalEvidence(recomputed)) ===
+      JSON.stringify(canonicalEvidence(value))
+      ? recomputed
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function decidePromotion(options: {
-  comparison: ProviderComparison;
+  comparison: unknown;
   reviewedCases: unknown;
   productionBaseline: unknown;
   rollbackReady?: boolean;
 }): PromotionDecision {
   const reasons: string[] = [];
+  const comparison = verifiedComparison(options.comparison);
+  if (comparison === undefined) {
+    return { promote: false, reasons: ["provider comparison is stale or forged"] };
+  }
   let cases: ReviewedCasesArtifact | undefined;
   let baseline: ProductionBaselineArtifact | undefined;
   if (options.reviewedCases === undefined || options.reviewedCases === null) {
@@ -950,21 +983,20 @@ export function decidePromotion(options: {
     );
   }
   if (
-    JSON.stringify(baseline.thresholds) !==
-    JSON.stringify(options.comparison.thresholds)
+    JSON.stringify(baseline.thresholds) !== JSON.stringify(comparison.thresholds)
   ) {
     reasons.push("comparison thresholds must be supplied from ProductionBaseline");
   }
   if (
     cases.corpusRevision !== baseline.corpusRevision ||
-    cases.corpusRevision !== options.comparison.paired[0]?.corpusRevision
+    cases.corpusRevision !== comparison.paired[0]?.corpusRevision
   ) {
     reasons.push("authoritative artifacts and comparison must use the same CorpusRevision");
   }
   const reviewedCaseIds = new Set(cases.cases.map((evaluationCase) => evaluationCase.id));
-  const comparedCaseIds = new Set(options.comparison.paired.map((item) => item.caseId));
+  const comparedCaseIds = new Set(comparison.paired.map((item) => item.caseId));
   for (const evaluationCase of cases.cases) {
-    const paired = options.comparison.paired.find((item) => item.caseId === evaluationCase.id);
+    const paired = comparison.paired.find((item) => item.caseId === evaluationCase.id);
     if (!paired) {
       reasons.push(`reviewed case ${evaluationCase.id} was not executed`);
       continue;
@@ -980,8 +1012,8 @@ export function decidePromotion(options: {
   for (const caseId of comparedCaseIds) {
     if (!reviewedCaseIds.has(caseId)) reasons.push(`unexpected compared case ${caseId}`);
   }
-  if (!options.comparison.gates.local.pass) {
-    reasons.push(...options.comparison.gates.local.violations);
+  if (!comparison.gates.local.pass) {
+    reasons.push(...comparison.gates.local.violations);
   }
   if (options.rollbackReady !== true) reasons.push("hosted rollback readiness is required");
   return { promote: reasons.length === 0, reasons: unique(reasons) };

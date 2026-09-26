@@ -10,6 +10,7 @@ export async function queryPinecone(
   embedding: number[],
   topK: number = 10,
   signal?: AbortSignal,
+  accessScope?: Record<string, unknown>,
 ): Promise<GroundingPassage[]> {
   const config = getRagConfig();
 
@@ -22,6 +23,9 @@ export async function queryPinecone(
       vector: embedding,
       topK,
       includeMetadata: true,
+      ...(accessScope === undefined || Object.keys(accessScope).length === 0
+        ? {}
+        : { filter: accessScope }),
     });
 
   let malformedScore = false;
@@ -51,6 +55,15 @@ export async function queryPinecone(
       metadata.corpusRevision !== config.PINECONE_CORPUS_REVISION ||
       (metadata.sourceId !== undefined &&
         (!isNonEmptyString(metadata.sourceId) || metadata.sourceId !== source))
+    ) {
+      return [];
+    }
+    if (
+      accessScope !== undefined &&
+      Object.entries(accessScope).some(
+        ([key, expected]) =>
+          JSON.stringify(metadata[key]) !== JSON.stringify(expected),
+      )
     ) {
       return [];
     }

@@ -42,7 +42,7 @@ class AgentTurnInput(BaseModel):
     thread_id: str | None = Field(default=None, min_length=1, alias="threadId")
     messages: list[AgentMessage] = Field(min_length=1)
     access_scope: dict[str, object] | None = None
-
+    tool_choice: ToolChoice = Field(default="none", alias="toolChoice")
 
 class RetrievalDecision(BaseModel):
     model_config = ConfigDict(
@@ -139,6 +139,9 @@ class AgentEvent(BaseModel):
     sequence: int = Field(ge=0)
     event_type: Literal[
         "run.started",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
         "retrieval.started",
         "retrieval.completed",
         "retrieval.failed",
@@ -176,6 +179,13 @@ CancellationObservation: TypeAlias = (
 
 
 class AgentModelStages(Protocol):
+    async def tool_call(
+        self,
+        input: AgentTurnInput,
+        tools: Sequence[Mapping[str, object] | object],
+        *,
+        tool_choice: ToolChoice = "auto",
+    ) -> ToolInvocation | None: ...
     async def classify(self, input: AgentTurnInput) -> RetrievalDecision: ...
 
     async def rewrite(

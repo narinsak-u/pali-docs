@@ -7,6 +7,8 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .vllm_profile import QWEN3_VLLM_PROFILE
+
 
 _DENSE_RAG_DEFAULTS = {
     "RAG_CANDIDATE_TOP_K": 20,
@@ -94,7 +96,6 @@ class Settings(BaseSettings):
         cls, values: object
     ) -> object:
         return _use_dense_defaults_for_invalid_quality(values)
-
     @model_validator(mode="after")
     def require_selected_provider_credentials(self) -> Settings:
         if self.PROVIDER_NAME == "openrouter":
@@ -110,14 +111,22 @@ class Settings(BaseSettings):
                     "when PROVIDER_NAME is opencode"
                 )
         else:
-            if (
-                not self.LOCAL_LLM_BASE_URL
-                or not self.LOCAL_LLM_API_KEY
-                or not self.LOCAL_LLM_MODEL
+            local_values = (
+                self.LOCAL_LLM_BASE_URL,
+                self.LOCAL_LLM_API_KEY,
+                self.LOCAL_LLM_MODEL,
+            )
+            if any(
+                not isinstance(value, str) or not value.strip()
+                for value in local_values
             ):
                 raise ValueError(
                     "LOCAL_LLM_BASE_URL, LOCAL_LLM_API_KEY, and LOCAL_LLM_MODEL "
-                    "are required when PROVIDER_NAME is local"
+                    "must be nonblank when PROVIDER_NAME is local"
+                )
+            if self.LOCAL_LLM_MODEL != QWEN3_VLLM_PROFILE.model_id:
+                raise ValueError(
+                    f"LOCAL_LLM_MODEL must be {QWEN3_VLLM_PROFILE.model_id}"
                 )
             try:
                 endpoint = urlsplit(self.LOCAL_LLM_BASE_URL)

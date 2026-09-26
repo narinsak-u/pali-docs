@@ -16,6 +16,7 @@ from langchain_openai import ChatOpenAI
 from app.config import Settings, get_settings
 from app.rag.retriever import PineconeRetriever
 from app.rag.types import GroundedBundle, GroundingBundle
+from app.vllm_profile import QWEN3_VLLM_PROFILE
 
 from .graph import (
     AgentGraphState,
@@ -82,12 +83,47 @@ def _bound_model_context(context: str) -> str:
     return f"{opening}{context[len(opening):len(opening) + body_length]}{footer}"
 
 
+def _validate_local_settings(settings: object) -> None:
+    model = getattr(settings, "LOCAL_LLM_MODEL", None)
+    api_key = getattr(settings, "LOCAL_LLM_API_KEY", None)
+    base_url = getattr(settings, "LOCAL_LLM_BASE_URL", None)
+    timeout = getattr(settings, "LOCAL_LLM_TIMEOUT_SECONDS", None)
+    max_tokens = getattr(settings, "LOCAL_LLM_MAX_OUTPUT_TOKENS", None)
+    if (
+        not isinstance(model, str)
+        or model != QWEN3_VLLM_PROFILE.model_id
+        or not isinstance(api_key, str)
+        or not api_key.strip()
+        or not isinstance(base_url, str)
+        or not base_url.strip()
+        or not isinstance(timeout, (int, float))
+        or isinstance(timeout, bool)
+        or not 0 < timeout <= 300
+        or not isinstance(max_tokens, int)
+        or isinstance(max_tokens, bool)
+        or not 0 < max_tokens <= 32768
+    ):
+        raise ValueError("Invalid local provider configuration")
+    try:
+        endpoint = urlsplit(base_url)
+        valid_endpoint = (
+            endpoint.scheme in {"http", "https"}
+            and bool(endpoint.hostname)
+            and (endpoint.port is None or 1 <= endpoint.port <= 65535)
+        )
+    except ValueError:
+        valid_endpoint = False
+    if not valid_endpoint:
+        raise ValueError("Invalid local provider configuration")
+
 @dataclass(frozen=True, slots=True)
 class AgentRunnerDependencies:
     retriever: AgentRetriever | None = None
     stages: AgentModelStages | None = None
     settings: Settings | Any | None = None
     model: Any | None = None
+    tools: Sequence[Mapping[str, object] | object] | ApplicationToolDispatcher | None = None
+    tool_choice: ToolChoice = "none"
 
 
 
@@ -165,6 +201,9 @@ class ApplicationToolDispatcher:
         if inspect.isawaitable(result):
             return await result
         return result
+    @property
+    def definitions(self) -> tuple[_ToolSpec, ...]:
+        return tuple(self._tools.values())
 
 class LangChainModelStages:
     """Structured LangChain calls hidden behind the framework-neutral stage API."""
@@ -182,9 +221,15 @@ class LangChainModelStages:
         async with _local_call_lock():
             return await runnable.ainvoke(messages)
     def _chat(self) -> Any:
+        configured_settings = self._settings
         if self._model is not None:
+            if (
+                configured_settings is not None
+                and getattr(configured_settings, "PROVIDER_NAME", None) == "local"
+            ):
+                _validate_local_settings(configured_settings)
             return self._model
-        settings = self._settings or get_settings()
+        settings = configured_settings or get_settings()
         provider = settings.PROVIDER_NAME
         timeout: float | None = None
         max_tokens: int | None = None
@@ -197,34 +242,12 @@ class LangChainModelStages:
             model_name = settings.OPENCODE_LLM_MODEL
             base_url = "https://opencode.ai/zen/go/v1"
         elif provider == "local":
+            _validate_local_settings(settings)
             api_key = settings.LOCAL_LLM_API_KEY
             model_name = settings.LOCAL_LLM_MODEL
             base_url = settings.LOCAL_LLM_BASE_URL
             timeout = settings.LOCAL_LLM_TIMEOUT_SECONDS
             max_tokens = settings.LOCAL_LLM_MAX_OUTPUT_TOKENS
-            endpoint_valid = False
-            if isinstance(base_url, str):
-                try:
-                    endpoint = urlsplit(base_url)
-                    endpoint_valid = (
-                        endpoint.scheme in {"http", "https"}
-                        and bool(endpoint.hostname)
-                        and (endpoint.port is None or 1 <= endpoint.port <= 65535)
-                    )
-                except ValueError:
-                    endpoint_valid = False
-            if (
-                not endpoint_valid
-                or not api_key
-                or not model_name
-                or not isinstance(timeout, (int, float))
-                or isinstance(timeout, bool)
-                or not 0 < timeout <= 300
-                or not isinstance(max_tokens, int)
-                or isinstance(max_tokens, bool)
-                or not 0 < max_tokens <= 32768
-            ):
-                raise ValueError("Invalid local provider configuration")
         else:
             raise ValueError(f"Unsupported provider: {provider}")
         if not api_key or not model_name:
@@ -674,6 +697,8 @@ class LangGraphAgentRunner:
         *,
         settings: Settings | Any | None = None,
         model: Any | None = None,
+        tools: Sequence[Mapping[str, object] | object] | ApplicationToolDispatcher | None = None,
+        tool_choice: ToolChoice = "none",
     ) -> None:
         if isinstance(retriever, AgentRunnerDependencies):
             dependencies = retriever
@@ -681,10 +706,22 @@ class LangGraphAgentRunner:
             stages = dependencies.stages
             settings = dependencies.settings
             model = dependencies.model
+            tools = dependencies.tools
+            tool_choice = dependencies.tool_choice
         self._settings = settings
         self._retriever = retriever
         self._stages = stages
         self._model = model
+        if isinstance(tools, ApplicationToolDispatcher):
+            self._tool_dispatcher = tools
+            self._tool_definitions = tools.definitions
+        elif tools is None:
+            self._tool_dispatcher = None
+            self._tool_definitions = ()
+        else:
+            self._tool_dispatcher = ApplicationToolDispatcher(tools)
+            self._tool_definitions = self._tool_dispatcher.definitions
+        self._tool_choice = tool_choice
 
     async def run_turn(
         self,
@@ -719,6 +756,13 @@ class LangGraphAgentRunner:
                 "retriever": retriever,
                 "cancellation": cancellation,
                 "event_emitter": forward_graph_event,
+                "tool_dispatcher": self._tool_dispatcher,
+                "tool_definitions": self._tool_definitions,
+                "tool_choice": (
+                    turn.tool_choice
+                    if turn.tool_choice != "none"
+                    else self._tool_choice
+                ),
             }
             if turn.thread_id:
                 configurable["thread_id"] = turn.thread_id
@@ -769,7 +813,6 @@ class LangGraphAgentRunner:
             )
             await emitter.emit("run.failed", {"runId": turn.run_id, "code": code})
             return TerminalResult(outcome="failed", code=code)
-
     async def run(
         self,
         run_id: str,
@@ -779,6 +822,7 @@ class LangGraphAgentRunner:
         thread_id: str | None = None,
         cancellation: object | None = None,
         access_scope: dict[str, object] | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> AgentTurnResult:
         turn = AgentTurnInput(
             run_id=run_id,
@@ -790,6 +834,7 @@ class LangGraphAgentRunner:
                 for message in messages
             ],
             access_scope=access_scope,
+            **({} if tool_choice is None else {"tool_choice": tool_choice}),
         )
         return await self.run_turn(turn, event_sink, cancellation)
 
@@ -825,19 +870,18 @@ def create_langgraph_agent_turn_runner(
     stages: AgentModelStages | Any | None = None,
     settings: Settings | Any | None = None,
     model: Any | None = None,
+    tools: Sequence[Mapping[str, object] | object] | ApplicationToolDispatcher | None = None,
+    tool_choice: ToolChoice = "none",
 ) -> LangGraphAgentRunner:
     if dependencies is not None:
-        return LangGraphAgentRunner(
-            retriever=dependencies.retriever,
-            stages=dependencies.stages,
-            settings=dependencies.settings,
-            model=dependencies.model,
-        )
+        return LangGraphAgentRunner(retriever=dependencies)
     return LangGraphAgentRunner(
         retriever=retriever,
         stages=stages,
         settings=settings,
         model=model,
+        tools=tools,
+        tool_choice=tool_choice,
     )
 
 
@@ -856,12 +900,16 @@ async def run_agent_turn(
     settings: Settings | Any | None = None,
     model: Any | None = None,
     access_scope: dict[str, object] | None = None,
+    tools: Sequence[Mapping[str, object] | object] | ApplicationToolDispatcher | None = None,
+    tool_choice: ToolChoice = "none",
 ) -> AgentTurnResult:
     runner = LangGraphAgentRunner(
         retriever=retriever,
         stages=stages,
         settings=settings,
         model=model,
+        tools=tools,
+        tool_choice=tool_choice,
     )
     return await runner.run(
         run_id,
@@ -870,4 +918,5 @@ async def run_agent_turn(
         thread_id=thread_id,
         cancellation=cancellation,
         access_scope=access_scope,
+        tool_choice=tool_choice,
     )

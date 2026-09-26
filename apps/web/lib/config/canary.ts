@@ -292,7 +292,7 @@ export class CanaryController {
   }
 
   rollback(reason: string, now: string): CanaryTransition {
-    parseNow(now);
+    const current = parseNow(now);
     const normalizedReason = reason.trim();
     if (!normalizedReason || normalizedReason.length > 120) {
       return {
@@ -306,6 +306,14 @@ export class CanaryController {
         accepted: false,
         state: this.snapshot(),
         reasons: ["hosted state is already active"],
+      };
+    }
+    const deadline = Date.parse(this.state.rollbackAvailableUntil ?? "");
+    if (!Number.isFinite(deadline) || current >= deadline) {
+      return {
+        accepted: false,
+        state: this.snapshot(),
+        reasons: ["rollback window has expired; revalidation is required"],
       };
     }
     this.state = hostedState(normalizedReason);

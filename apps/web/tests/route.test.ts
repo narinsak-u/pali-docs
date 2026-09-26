@@ -317,6 +317,40 @@ describe("POST /api/question", () => {
     });
     expect(JSON.stringify(await response.json())).toContain("BACKEND ANSWER");
   });
+  it("forwards only the server-authenticated access scope to the LangGraph boundary", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    const request = withAuthenticatedTenant(makeRequest(validBody), {
+      tenantId: "tenant-a",
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        makeLangGraphResponse([
+          {
+            eventType: "run.completed",
+            payload: {
+              runId: "00000000-0000-4000-8000-000000000006",
+              outcome: "answered",
+            },
+          },
+        ]),
+      );
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    const fetchOptions = fetchMock.mock.calls[0]?.[1];
+    expect(fetchOptions?.headers).toEqual(
+      expect.objectContaining({
+        "X-Access-Scope": JSON.stringify({ tenant: "tenant-a" }),
+      }),
+    );
+    expect(JSON.parse(String(fetchOptions?.body))).not.toHaveProperty(
+      "accessScope",
+    );
+  });
   it("requires the trusted server context and never uses a client-shaped identity", () => {
     vi.stubEnv(
       "RAG_CANARY_STATE",

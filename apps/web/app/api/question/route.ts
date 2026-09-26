@@ -7,8 +7,11 @@ import {
   createStructuredTraceSink,
 } from "@/lib/agent/structured-trace-sink";
 import type { AgentTurnRunner } from "@/lib/agent/types";
-import { readCanaryState, selectInternalCanaryBackend } from "@/lib/config/canary";
-import { getAuthenticatedTenantId } from "@/lib/config/canary-context";
+import { getAuthenticatedAccessScope, getAuthenticatedTenantId } from "@/lib/config/canary-context";
+import {
+  readCanaryState,
+  selectInternalCanaryBackend,
+} from "@/lib/config/canary";
 import { getModelConfig } from "@/lib/config/model";
 import { getRagConfig } from "@/lib/config/rag";
 import { getRolloutConfig, selectRagBackend, type RagBackend } from "@/lib/config/rollout";
@@ -40,6 +43,7 @@ function createAiSdkResponse(
   messages: SafeQuestionRequest["messages"],
   runId: string,
   req: Request,
+  accessScope?: Record<string, string>,
 ): Response {
   try {
     getModelConfig();
@@ -56,7 +60,11 @@ function createAiSdkResponse(
         ]);
 
         try {
-          await runner.runTurn({ runId, messages }, sink, req.signal);
+          await runner.runTurn(
+            { runId, messages, ...(accessScope === undefined ? {} : { accessScope }) },
+            sink,
+            req.signal,
+          );
         } catch (error: unknown) {
           console.error("Question agent run error:", { runId, error });
           const code = req.signal.aborted
@@ -109,6 +117,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const runId = globalThis.crypto.randomUUID();
+  const accessScope = getAuthenticatedAccessScope(req);
   const backend = selectQuestionBackend(req, runId);
 
   if (backend === "langgraph") {
@@ -119,7 +128,7 @@ export async function POST(req: Request): Promise<Response> {
         runId,
         reason: "missing_configuration",
       });
-      return createAiSdkResponse(messages, runId, req);
+      return createAiSdkResponse(messages, runId, req, accessScope);
     }
     let backendResponse: Response;
     const backendSignal = AbortSignal.any([
@@ -132,6 +141,9 @@ export async function POST(req: Request): Promise<Response> {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${internalToken}`,
+          ...(accessScope === undefined
+            ? {}
+            : { "X-Access-Scope": JSON.stringify(accessScope) }),
         },
         body: JSON.stringify({
           runId,
@@ -145,7 +157,7 @@ export async function POST(req: Request): Promise<Response> {
     } catch (error: unknown) {
       if (req.signal.aborted) throw error;
       console.error("LangGraph question fallback:", { runId, error });
-      return createAiSdkResponse(messages, runId, req);
+      return createAiSdkResponse(messages, runId, req, accessScope);
     }
 
     if (!backendResponse.ok) {
@@ -155,7 +167,7 @@ export async function POST(req: Request): Promise<Response> {
         reason: "backend_status",
         status: backendResponse.status,
       });
-      return createAiSdkResponse(messages, runId, req);
+      return createAiSdkResponse(messages, runId, req, accessScope);
     }
 
     if (
@@ -169,7 +181,7 @@ export async function POST(req: Request): Promise<Response> {
         runId,
         reason: "invalid_content_type",
       });
-      return createAiSdkResponse(messages, runId, req);
+      return createAiSdkResponse(messages, runId, req, accessScope);
     }
 
     const stream = createUIMessageStream({
@@ -190,5 +202,5 @@ export async function POST(req: Request): Promise<Response> {
     return createUIMessageStreamResponse({ stream }) as Response;
   }
 
-  return createAiSdkResponse(messages, runId, req);
+  return createAiSdkResponse(messages, runId, req, accessScope);
 }

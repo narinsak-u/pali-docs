@@ -31,3 +31,10 @@ export function getAuthenticatedTenantId(request: Request): string | undefined {
   const context = (request as ContextRequest)[AUTHENTICATED_TENANT];
   return context?.tenantId;
 }
+
+export function getAuthenticatedAccessScope(
+  request: Request,
+): Record<string, string> | undefined {
+  const tenantId = getAuthenticatedTenantId(request);
+  return tenantId === undefined ? undefined : { tenant: tenantId };
+}

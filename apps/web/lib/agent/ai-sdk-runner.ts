@@ -116,7 +116,7 @@ function boundModelContext(context: string): string {
   return `${opening}${context.slice(opening.length, opening.length + bodyLength)}${footer}`;
 }
 
-const defaultRetriever: Retriever = { retrieve };
+const defaultRetriever: Retriever = { supportsAccessScope: true, retrieve };
 export function createGroundingPrompt(grounding: GroundedBundle): {
   system: string;
   evidence: string;

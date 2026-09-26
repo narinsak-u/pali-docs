@@ -38,6 +38,36 @@ describe("queryPinecone", () => {
     });
     expect(result).toEqual([]);
   });
+  it("filters Pinecone results by authenticated scope before returning passages", async () => {
+    const match = (id: string, tenant: string) => ({
+      id,
+      score: 0.9,
+      metadata: {
+        text: `${id} text`,
+        source: "part-1/chapter-1",
+        sourceVersion: "source-version-a",
+        title: "บทที่ 1",
+        corpusRevision: "corpus-2026-09-18",
+        tenant,
+      },
+    });
+    const mockQuery = vi
+      .fn()
+      .mockResolvedValue({ matches: [match("allowed", "tenant-a"), match("forbidden", "tenant-b")] });
+    mockedNamespace.mockReturnValue({ query: mockQuery });
+
+    const result = await queryPinecone([0.1], 5, undefined, {
+      tenant: "tenant-a",
+    });
+
+    expect(mockQuery).toHaveBeenCalledWith({
+      vector: [0.1],
+      topK: 5,
+      includeMetadata: true,
+      filter: { tenant: "tenant-a" },
+    });
+    expect(result.map((passage) => passage.id)).toEqual(["allowed"]);
+  });
 
   it("maps only citation-safe metadata into grounding passages", async () => {
     const mockQuery = vi.fn().mockResolvedValue({

@@ -116,7 +116,6 @@ function expandByParent(
   for (const passage of passages) {
     if (
       passage.parentId === undefined ||
-      passage.parentText === undefined ||
       passage.section === undefined ||
       passage.sourceVersion === undefined
     ) {
@@ -342,6 +341,7 @@ export async function retrieve(
       embedding,
       config.RAG_CANDIDATE_TOP_K,
       signal,
+      request.accessScope,
     );
   } catch {
     signal?.throwIfAborted();

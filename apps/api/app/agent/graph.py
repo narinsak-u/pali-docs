@@ -31,6 +31,9 @@ MAX_CITATION_REPAIRS = 1
 
 EventType = Literal[
     "run.started",
+    "tool.started",
+    "tool.completed",
+    "tool.failed",
     "retrieval.started",
     "retrieval.completed",
     "retrieval.failed",
@@ -144,6 +147,7 @@ async def _call(
     function: Callable[..., Awaitable[object] | object],
     *args: object,
     config: object,
+    **kwargs: object,
 ) -> object:
     check_cancelled(config)
     try:
@@ -151,9 +155,9 @@ async def _call(
     except (TypeError, ValueError):
         parameters = {}
     if "config" in parameters:
-        result = function(*args, config=config)
+        result = function(*args, **kwargs, config=config)
     else:
-        result = function(*args)
+        result = function(*args, **kwargs)
     if inspect.isawaitable(result):
         result = await await_with_cancellation(result, _cancel_observation(config))
     check_cancelled(config)
@@ -216,6 +220,55 @@ def _unavailable_code(bundle: GroundingBundle | None) -> str:
     if bundle is not None and bundle.status == "unavailable":
         return bundle.error_code
     return "retrieval_error"
+
+
+async def tool_node(state: AgentGraphState, config: object) -> dict[str, object]:
+    configurable = _configurable(config)
+    dispatcher = configurable.get("tool_dispatcher")
+    definitions = configurable.get("tool_definitions", ())
+    if dispatcher is None or not definitions:
+        return {}
+    turn = _input(state)
+    tool_choice = configurable.get("tool_choice", turn.tool_choice)
+    if tool_choice == "none":
+        return {}
+    stages = configurable.get("stages")
+    tool_call = getattr(stages, "tool_call", None)
+    if not callable(tool_call):
+        raise RuntimeError("configured tool execution is unsupported")
+    invocation = await _call(
+        tool_call,
+        turn,
+        definitions,
+        tool_choice=tool_choice,
+        config=config,
+    )
+    if invocation is None:
+        return {}
+    if not hasattr(invocation, "call_id") or not hasattr(invocation, "name"):
+        raise RuntimeError("tool stage returned an invalid invocation")
+    run_id = turn.run_id
+    call_id = str(invocation.call_id)
+    name = str(invocation.name)
+    await _emit_immediate(
+        config,
+        _event(run_id, "tool.started", toolId=call_id, name=name),
+    )
+    try:
+        result = await _call(dispatcher.dispatch, invocation, turn, config=config)
+    except Exception:
+        await _emit_immediate(
+            config,
+            _event(run_id, "tool.failed", toolId=call_id, name=name, code="tool_error"),
+        )
+        raise
+    if hasattr(result, "model_dump"):
+        result = result.model_dump(mode="json")
+    return {
+        "events": [
+            _event(run_id, "tool.completed", toolId=call_id, name=name, result=result)
+        ]
+    }
 async def _classify(
     state: AgentGraphState, config: object
 ) -> RetrievalDecision:
@@ -608,6 +661,9 @@ def build_agent_graph(
         configurable.setdefault("stages", stages)
         return {"configurable": configurable}
 
+    async def tools(state: AgentGraphState, config: RunnableConfig) -> dict[str, object]:
+        return await tool_node(state, with_dependencies(config))
+
     async def classify(state: AgentGraphState, config: RunnableConfig) -> dict[str, object]:
         return await classify_node(state, with_dependencies(config))
 
@@ -652,6 +708,7 @@ def build_agent_graph(
         return await complete_node(state, with_dependencies(config))
 
     graph = StateGraph(AgentGraphState)
+    graph.add_node("tools", tools)
     graph.add_node("classify", classify)
     graph.add_node("direct_answer", direct_answer)
     graph.add_node("retrieve", retrieve)
@@ -663,7 +720,8 @@ def build_agent_graph(
     graph.add_node("repair", repair)
     graph.add_node("suggestions", suggestions)
     graph.add_node("complete", complete)
-    graph.add_edge(START, "classify")
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", "classify")
     graph.add_conditional_edges("classify", route_after_classify)
     graph.add_edge("retrieve", "evidence_policy")
     graph.add_conditional_edges("evidence_policy", route_after_evidence_policy)

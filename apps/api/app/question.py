@@ -91,6 +91,31 @@ def _request_id(request: Request) -> str:
         return supplied
     return str(uuid4())
 
+def _access_scope(request: Request) -> dict[str, object] | None:
+    raw = request.headers.get("x-access-scope")
+    if raw is None:
+        return None
+    if len(raw) > 8_192:
+        raise _internal_error(400, "invalid_request", "Invalid request")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise _internal_error(400, "invalid_request", "Invalid request") from error
+    if not isinstance(value, dict):
+        raise _internal_error(400, "invalid_request", "Invalid request")
+    for key, item in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise _internal_error(400, "invalid_request", "Invalid request")
+        if isinstance(item, (dict, tuple, set)) or (
+            not isinstance(item, (str, int, float, bool, list, type(None)))
+        ):
+            raise _internal_error(400, "invalid_request", "Invalid request")
+        if isinstance(item, list) and not all(
+            isinstance(entry, (str, int, float, bool)) for entry in item
+        ):
+            raise _internal_error(400, "invalid_request", "Invalid request")
+    return value
+
 
 def _sse(event: AgentEvent) -> bytes:
     return f"data: {json.dumps(event.as_dict(), separators=(',', ':'))}\n\n".encode("utf-8")
@@ -194,6 +219,7 @@ async def question(
     authorization: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
     _authorize(authorization, _configured_token())
+    access_scope = _access_scope(request)
     request_id = _request_id(request)
     try:
         settings: Settings = get_settings()
@@ -206,6 +232,7 @@ async def question(
         run_id=payload.run_id or str(uuid4()),
         thread_id=payload.thread_id,
         messages=[{"role": message.role, "content": message.content} for message in payload.messages],
+        access_scope=access_scope,
     )
     provider = getattr(settings, "PROVIDER_NAME", "hosted")
     timeout_seconds = getattr(settings, "LOCAL_LLM_TIMEOUT_SECONDS", None) if provider == "local" else None
