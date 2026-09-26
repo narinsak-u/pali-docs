@@ -225,7 +225,7 @@ async def question(
         settings: Settings = get_settings()
         if payload.corpus_revision is not None and payload.corpus_revision != settings.PINECONE_CORPUS_REVISION:
             raise _internal_error(400, "invalid_request", "Invalid request")
-        if settings.PROVIDER_NAME == "local" and access_scope is None:
+        if settings.PROVIDER_NAME == "local" and not access_scope:
             raise _internal_error(401, "unauthorized", "Authenticated access scope is required")
         runner = create_langgraph_agent_turn_runner(settings=settings)
     except (ValidationError, ValueError, OSError, RuntimeError):

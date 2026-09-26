@@ -343,7 +343,7 @@ export function selectInternalCanaryBackend(
   if (
     !Number.isFinite(observationEnds) ||
     !Number.isFinite(rollbackDeadline) ||
-    now >= observationEnds ||
+    (state.state === "canary" && now >= observationEnds) ||
     now >= rollbackDeadline
   ) {
     return "ai-sdk";

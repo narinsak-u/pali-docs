@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from app import main as main_module
 from app import question as question_module
@@ -237,3 +238,27 @@ def test_question_request_limits_remain_bounded() -> None:
                 "unexpected": "nope",
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_question_rejects_empty_access_scope_for_local_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
+    monkeypatch.setattr(question_module, "get_settings", lambda: _settings())
+    request = main_module.Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/question",
+            "headers": [(b"x-access-scope", b"{}")],
+        }
+    )
+    with pytest.raises(HTTPException) as error:
+        await question_module.question(
+            question_module.QuestionRequest.model_validate(
+                {"messages": [{"role": "user", "content": "hello"}]}
+            ),
+            request,
+        )
+    assert error.value.status_code == 401

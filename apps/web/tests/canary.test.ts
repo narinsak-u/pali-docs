@@ -92,6 +92,24 @@ describe("server-owned canary targeting", () => {
     ).toBe("ai-sdk");
   });
 
+  it("keeps promoted traffic through observation expiry until rollback expires", () => {
+    const now = Date.now();
+    const identity = { tenantId: "tenant-a", requestId: "request-a" };
+    const promoted = {
+      ...canaryState(),
+      state: "promoted" as const,
+      observationEndsAt: new Date(now - 1).toISOString(),
+      rollbackAvailableUntil: new Date(now + 1_000).toISOString(),
+    };
+    expect(selectInternalCanaryBackend(identity, promoted)).toBe("langgraph");
+    expect(
+      selectInternalCanaryBackend(identity, {
+        ...promoted,
+        rollbackAvailableUntil: new Date(now - 1).toISOString(),
+      }),
+    ).toBe("ai-sdk");
+  });
+
   it("does not carry one tenant's cohort assignment into another tenant", () => {
     const state = canaryState();
     const tenantA = { tenantId: "tenant-a", requestId: "request-a" };
