@@ -761,6 +761,19 @@ export function compareProviderEvaluations(
     ) {
       throw new Error(`paired evaluation corpus revision mismatch for case ${item.caseId}`);
     }
+    for (const trace of [item.hosted, item.local]) {
+      const expected = trace.grounding.expectedSourceIds;
+      const forbidden = trace.grounding.forbiddenSourceIds;
+      if (unique(expected).length !== expected.length) {
+        throw new Error(`duplicate expected source mapping for case ${item.caseId}`);
+      }
+      if (unique(forbidden).length !== forbidden.length) {
+        throw new Error(`duplicate forbidden source mapping for case ${item.caseId}`);
+      }
+      if (expected.some((sourceId) => forbidden.includes(sourceId))) {
+        throw new Error(`overlapping source mapping for case ${item.caseId}`);
+      }
+    }
   }
   const aggregates = {
     hosted: aggregate("hosted", paired),

@@ -397,11 +397,11 @@ describe("provider comparison and promotion gates", () => {
       ),
     ).toThrow("AccessScope");
 
-    const forbiddenCase = { ...evaluationCase, forbiddenSourceIds: ["source-1"] };
+    const forbiddenCase = { ...evaluationCase, forbiddenSourceIds: ["secret-source"] };
     const forbidden = await runPairedEvaluationCase({
       evaluationCase: forbiddenCase,
-      hosted: runnerFor("answer", { source: "source-1" }),
-      local: runnerFor("answer", { source: "source-1" }),
+      hosted: runnerFor("answer", { source: "secret-source" }),
+      local: runnerFor("answer", { source: "secret-source" }),
       hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
       localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
       corpusRevision: "corpus-1",
