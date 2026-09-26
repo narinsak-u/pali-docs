@@ -32,12 +32,14 @@ class LocalStructuredModel:
         self.value = value
         self.structured_kwargs: dict[str, object] | None = None
         self.tool_kwargs: list[dict[str, object]] = []
+        self.tool_definitions: list[list[object]] = []
 
     def with_structured_output(self, _schema: type[object], **kwargs: object) -> StructuredRunnable:
         self.structured_kwargs = kwargs
         return StructuredRunnable(self.value)
 
-    def bind_tools(self, _tools: list[object], **kwargs: object) -> StructuredRunnable:
+    def bind_tools(self, tools: list[object], **kwargs: object) -> StructuredRunnable:
+        self.tool_definitions.append(tools)
         self.tool_kwargs.append(kwargs)
         return StructuredRunnable(
             AIMessage(
@@ -78,6 +80,7 @@ def test_local_structured_calls_use_strict_function_calling_and_reject_malformed
     assert model.structured_kwargs == {
         "method": "function_calling",
         "strict": True,
+        "include_raw": True,
     }
 
 
@@ -107,6 +110,7 @@ async def test_tool_choice_is_request_level_and_parsed_without_model_execution(
     assert isinstance(call, ToolInvocation)
     assert call.name == "echo"
     assert call.arguments == {"value": "hello"}
+    assert model.tool_definitions[-1][0]["function"]["strict"] is True
     assert model.tool_kwargs[-1]["parallel_tool_calls"] is False
     assert model.tool_kwargs[-1]["strict"] is True
     assert model.tool_kwargs[-1]["tool_choice"] == choice
@@ -156,6 +160,35 @@ async def test_local_stage_invocations_are_serialized_for_the_pilot() -> None:
         settings=type("Settings", (), {"PROVIDER_NAME": "local"})(),
     )
     await asyncio.gather(stages.classify(turn()), stages.classify(turn()))
+    assert model.runnable.max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_local_stage_invocations_are_serialized_across_stage_instances() -> None:
+    class SerialRunnable:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        async def ainvoke(self, _messages: object) -> dict[str, object]:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return {"needsRetrieval": False, "query": "greeting"}
+
+    class SerialModel:
+        def __init__(self) -> None:
+            self.runnable = SerialRunnable()
+
+        def with_structured_output(self, _schema: type[object], **_kwargs: object) -> SerialRunnable:
+            return self.runnable
+
+    model = SerialModel()
+    settings = type("Settings", (), {"PROVIDER_NAME": "local"})()
+    first = LangChainModelStages(model=model, settings=settings)
+    second = LangChainModelStages(model=model, settings=settings)
+    await asyncio.gather(first.classify(turn()), second.classify(turn()))
     assert model.runnable.max_active == 1
 @pytest.mark.asyncio
 async def test_tool_dispatch_validates_arguments_and_authorization() -> None:
@@ -243,6 +276,65 @@ async def test_tool_dispatch_rejects_malformed_or_unknown_model_calls() -> None:
             tool_choice="auto",
         )
 
+    with pytest.raises(ValueError, match="required tool call"):
+        stages.parse_tool_call(
+            AIMessage(content="", tool_calls=[]),
+            ["echo"],
+            tool_choice={"type": "function", "function": {"name": "echo"}},
+        )
+
+    with pytest.raises(ValueError, match="invalid tool"):
+        stages.parse_tool_call(
+            AIMessage(
+                content="",
+                invalid_tool_calls=[
+                    {"id": "bad", "name": "echo", "args": "not-json", "error": "bad"}
+                ],
+            ),
+            ["echo"],
+            tool_choice="auto",
+        )
+
+    with pytest.raises(ValueError, match="tool_calls"):
+        stages.parse_tool_call(
+            type("MalformedResponse", (), {"tool_calls": "not-a-list"})(),
+            ["echo"],
+            tool_choice="auto",
+        )
+
+
+
+@pytest.mark.asyncio
+async def test_local_structured_output_rejects_multiple_tool_calls() -> None:
+    model = LocalStructuredModel(
+        {
+            "raw": AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "name": "RetrievalDecision",
+                        "args": {"needsRetrieval": False, "query": "hello"},
+                        "type": "tool_call",
+                    },
+                    {
+                        "id": "call-2",
+                        "name": "RetrievalDecision",
+                        "args": {"needsRetrieval": False, "query": "hello"},
+                        "type": "tool_call",
+                    },
+                ],
+            ),
+            "parsed": {"needsRetrieval": False, "query": "hello"},
+            "parsing_error": None,
+        }
+    )
+    stages = LangChainModelStages(
+        model=model,
+        settings=type("Settings", (), {"PROVIDER_NAME": "local"})(),
+    )
+    with pytest.raises(ValueError, match="multiple structured tool"):
+        await stages.classify(turn())
 
 @pytest.mark.asyncio
 async def test_tool_call_rejects_arguments_that_fail_the_registered_schema() -> None:

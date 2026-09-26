@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -55,6 +56,18 @@ Cite only the citation IDs explicitly supplied as allowed for the current turn. 
 Follow-up suggestions are optional. When provided, keep them short, specific, in the user's language, and grounded in the validated answer."""
 
 MAX_MODEL_CONTEXT_CHARS = 50_000
+_LOCAL_CALL_LOCKS: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Lock
+] = weakref.WeakKeyDictionary()
+
+
+def _local_call_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _LOCAL_CALL_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _LOCAL_CALL_LOCKS[loop] = lock
+    return lock
 
 
 def _bound_model_context(context: str) -> str:
@@ -159,15 +172,15 @@ class LangChainModelStages:
     def __init__(self, model: Any | None = None, settings: Settings | Any | None = None) -> None:
         self._settings = settings
         self._model = model
-        self._call_lock = asyncio.Lock()
 
     def _provider(self) -> str:
         return str(getattr(self._settings or get_settings(), "PROVIDER_NAME", ""))
 
     async def _ainvoke(self, runnable: Any, messages: object) -> Any:
-        async with self._call_lock:
+        if self._provider() != "local":
             return await runnable.ainvoke(messages)
-
+        async with _local_call_lock():
+            return await runnable.ainvoke(messages)
     def _chat(self) -> Any:
         if self._model is not None:
             return self._model
@@ -243,13 +256,27 @@ class LangChainModelStages:
             else:
                 messages.append(HumanMessage(content=message.content))
         return messages
-
     async def _structured(self, schema: type[Any], messages: list[Any]) -> Any:
         kwargs: dict[str, object] = {}
-        if self._provider() == "local":
-            kwargs.update(method="function_calling", strict=True)
+        local = self._provider() == "local"
+        if local:
+            kwargs.update(method="function_calling", strict=True, include_raw=True)
         structured = self._chat().with_structured_output(schema, **kwargs)
         value = await self._ainvoke(structured, messages)
+        if local and isinstance(value, Mapping) and {"raw", "parsed"}.issubset(value):
+            if value.get("parsing_error") is not None:
+                raise ValueError("structured output parsing failed")
+            raw = value["raw"]
+            if getattr(raw, "invalid_tool_calls", []):
+                raise ValueError("invalid structured tool call")
+            calls = getattr(raw, "tool_calls", [])
+            if not isinstance(calls, list):
+                raise ValueError("structured tool_calls must be a list")
+            if len(calls) > 1:
+                raise ValueError("multiple structured tool calls are not supported")
+            value = value["parsed"]
+            if value is None:
+                raise ValueError("structured output is missing")
         return schema.model_validate(value)
 
     @staticmethod
@@ -259,12 +286,24 @@ class LangChainModelStages:
         *,
         tool_choice: ToolChoice = "auto",
     ) -> ToolInvocation | None:
-        if isinstance(response, Mapping):
-            calls = response.get("tool_calls")
+        if isinstance(response, AIMessage):
+            if response.invalid_tool_calls:
+                raise ValueError("invalid tool call")
+            calls = response.tool_calls
+            if not isinstance(calls, list):
+                raise ValueError("tool_calls must be a list")
+        elif isinstance(response, Mapping):
+            if response.get("invalid_tool_calls"):
+                raise ValueError("invalid tool call")
+            if "tool_calls" not in response:
+                raise ValueError("malformed tool response")
+            calls = response["tool_calls"]
+            if not isinstance(calls, list):
+                raise ValueError("tool_calls must be a list")
         else:
             calls = getattr(response, "tool_calls", None)
-        if not isinstance(calls, list):
-            calls = []
+            if not isinstance(calls, list):
+                raise ValueError("tool_calls must be a list")
         if tool_choice == "none":
             if calls:
                 raise ValueError("tool call returned when tool choice is none")
@@ -272,9 +311,13 @@ class LangChainModelStages:
         if len(calls) > 1:
             raise ValueError("multiple tool calls are not supported by the serialized pilot")
         if not calls:
-            if tool_choice == "required" or (
-                isinstance(tool_choice, str)
-                and tool_choice not in {"auto", "none", "required"}
+            if (
+                tool_choice == "required"
+                or isinstance(tool_choice, Mapping)
+                or (
+                    isinstance(tool_choice, str)
+                    and tool_choice not in {"auto", "none", "required"}
+                )
             ):
                 raise ValueError("required tool call was not returned")
             return None
@@ -353,6 +396,7 @@ class LangChainModelStages:
                         "name": spec.name,
                         "description": spec.description,
                         "parameters": spec.args_schema.model_json_schema(),
+                        "strict": True,
                     },
                 }
                 for spec in specs
