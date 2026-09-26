@@ -22,7 +22,7 @@ This host must not be an Apple Silicon or CPU-only deployment target. The reposi
 - Tokenizer: the same repository and revision as the model.
 - One tensor-parallel GPU (`--tensor-parallel-size 1`).
 - Qwen3 reasoning parser (`qwen3`) and the model's pinned tokenizer chat template.
-- Non-thinking by default (`enable_thinking: false`). The FastAPI local provider also sends this request option through its existing `ChatOpenAI` seam.
+- Non-thinking requests (`enable_thinking: false`) are sent by the FastAPI local provider through its existing `ChatOpenAI` seam; the compose server does not use an unsupported server-level default flag.
 
 Do not replace these with `latest`, an unpinned Hugging Face branch, a different tokenizer, or a different parser without a new compatibility check. Tool parsing and structured output are intentionally not enabled by this pilot.
 

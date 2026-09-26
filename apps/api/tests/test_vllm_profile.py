@@ -36,7 +36,7 @@ def test_compose_profile_keeps_vllm_private_and_matches_pinned_profile() -> None
     assert f"--tokenizer-revision\n      - {QWEN3_VLLM_PROFILE.tokenizer_revision}" in compose
     assert '127.0.0.1:8000:8000' in compose
     assert '--reasoning-parser\n      - qwen3' in compose
-    assert '"enable_thinking": false' in compose
+    assert "--default-chat-template-kwargs" not in compose
 
 def test_model_identity_accepts_only_the_expected_served_model() -> None:
     assert validate_model_identity(

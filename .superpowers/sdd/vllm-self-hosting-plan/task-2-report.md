@@ -2,9 +2,9 @@
 
 ## Implementation
 
-- Added `deploy/vllm/docker-compose.yml`, a one-GPU Linux NVIDIA profile using the immutable `vllm/vllm-openai` v0.8.5 image digest.
+- Added `deploy/vllm/docker-compose.yml`, a one-GPU Linux NVIDIA profile using the immutable `vllm/vllm-openai` v0.9.0 image digest.
 - Pinned both model and tokenizer to `Qwen/Qwen3-8B` revision `b968826d9c46dd6066d109eabc6255188de91218` and served the exact model ID `Qwen/Qwen3-8B`.
-- Configured the Qwen3 reasoning parser, the pinned tokenizer chat template, and default non-thinking requests (`enable_thinking: false`). Tool parsing and structured-output flags remain out of scope for Task 2.
+- Configured the Qwen3 reasoning parser and pinned tokenizer chat template; non-thinking request options (`enable_thinking: false`) are sent through the existing local `ChatOpenAI` seam. Tool parsing and structured-output flags remain out of scope for Task 2.
 - Bound vLLM to `127.0.0.1:8000` and required a server-only `VLLM_API_KEY`; the browser receives neither the endpoint nor credential.
 - Added `apps/api/app/vllm_profile.py` with immutable profile metadata, strict readiness URL/timeout/key validation, health checking, and fail-closed exact `/v1/models` identity validation.
 - Added `apps/api/scripts/check_vllm.py` for deterministic readiness and identity checks without exposing credentials in output.
@@ -135,4 +135,19 @@ pytest: 25 passed, 29 warnings in 0.75s
 
 $ VLLM_API_KEY=smoke docker compose -f deploy/vllm/docker-compose.yml config --quiet
 # exit 0, no output
+
 ```
+
+The re-review found that vLLM 0.9.0's server CLI does not define `--default-chat-template-kwargs`. I verified the exact [v0.9.0 `cli_args.py` source](https://raw.githubusercontent.com/vllm-project/vllm/v0.9.0/vllm/entrypoints/openai/cli_args.py): its OpenAI parser defines `--chat-template`, `--reasoning-parser`, and related flags, but no server-level default chat-template kwargs flag. The compose flag was removed; non-thinking remains request-level through `ChatOpenAI.extra_body` and the documented request `chat_template_kwargs`.
+
+TDD evidence for the unsupported-flag correction:
+
+```text
+$ apps/api/.venv/bin/pytest -q apps/api/tests/test_vllm_profile.py::test_compose_profile_keeps_vllm_private_and_matches_pinned_profile
+FAILED ... assert "--default-chat-template-kwargs" not in compose
+...
+.                                                                        [100%]
+1 passed, 1 warning
+```
+
+The final focused GREEN command above confirms the compose/profile test and all provider tests pass after the flag removal.
