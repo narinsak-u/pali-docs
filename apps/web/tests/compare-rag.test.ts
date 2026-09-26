@@ -245,6 +245,7 @@ describe("FastAPI runner", () => {
         runId: "run-1",
         attempt: 1,
         matchCount: 1,
+        corpusRevision: "corpus-1",
         acceptedSourceIds: ["source-a"],
       }),
       envelope("run-1", 2, "answer.completed", {
@@ -309,6 +310,7 @@ describe("FastAPI runner", () => {
     });
     expect(sink.emit).toHaveBeenCalledTimes(6);
     expect(runner.getRetrievedSourceIds()).toEqual(["source-a"]);
+    expect(runner.observedCorpusRevision).toBe("corpus-1");
   });
 
   it.each([

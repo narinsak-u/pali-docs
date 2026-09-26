@@ -570,6 +570,17 @@ async function runProvider(
     metrics.failure = "failed";
   }
   const completedAt = now();
+  if (runner.observedCorpusRevision !== undefined) {
+    if (
+      metrics.observedCorpusRevision !== undefined &&
+      metrics.observedCorpusRevision !== runner.observedCorpusRevision
+    ) {
+      metrics.observedCorpusRevisionMismatch = true;
+      metrics.observedCorpusRevision = undefined;
+    } else {
+      metrics.observedCorpusRevision = runner.observedCorpusRevision;
+    }
+  }
   const observedSources = unique(metrics.retrievedSourceIds);
   const citationSources = unique(metrics.citationSourceIds);
   const actualOutcome: RagActualOutcome =

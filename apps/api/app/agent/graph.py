@@ -433,6 +433,7 @@ async def retrieve_node(state: AgentGraphState, config: object) -> dict[str, obj
                 "retrieval.completed",
                 attempt=attempt,
                 matchCount=match_count,
+                corpusRevision=bundle.corpus_revision,
                 acceptedSourceIds=accepted_source_ids,
                 **metrics_payload,
             ),

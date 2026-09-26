@@ -65,12 +65,6 @@ export interface Retriever {
 
 export interface AiSdkAgentTurnRunnerDependencies {
   retriever?: Retriever;
-  observedServingMetadata?: {
-    model: string;
-    servingRevision: string;
-    imageDigest?: string;
-    tokenizer?: string;
-  };
   decide?(
     input: AgentTurnInput,
     signal?: AbortSignal,
@@ -143,7 +137,7 @@ ${boundModelContext(grounding.context)}`,
 }
 
 function createDefaultModelStages(): Required<
-  Omit<AiSdkAgentTurnRunnerDependencies, "retriever" | "observedServingMetadata">
+  Omit<AiSdkAgentTurnRunnerDependencies, "retriever">
 > {
   let configuredModel: LanguageModel | undefined;
   const model = (): LanguageModel => {
@@ -329,9 +323,6 @@ export function createAiSdkAgentTurnRunner(
 
   return {
     supportsAccessScope: retriever.supportsAccessScope === true,
-    ...(dependencies.observedServingMetadata === undefined
-      ? {}
-      : { observedServingMetadata: dependencies.observedServingMetadata }),
     async runTurn(input, sink, signal): Promise<AgentTurnResult> {
       sink.emit({ type: "run.started", runId: input.runId });
 

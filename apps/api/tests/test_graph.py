@@ -264,6 +264,7 @@ async def test_valid_citations_answer_and_emit_monotonic_v1_envelopes() -> None:
         if envelope["eventType"] == "retrieval.completed"
     )
     assert retrieval_completed["payload"]["acceptedSourceIds"] == ["book-1"]
+    assert retrieval_completed["payload"]["corpusRevision"] == "rev-1"
     assert retrieval_completed["payload"]["acceptedProvenance"] == [
         {
             "id": "p-1",

@@ -200,9 +200,13 @@ export function createFastApiRunner(options: {
   if (!corpusRevision) throw new Error("FastAPI corpus revision is required");
 
   let retrievedSourceIds: string[] = [];
+  let observedCorpusRevision: string | undefined;
 
   const runner: FastApiRunner = {
     supportsAccessScope: true,
+    get observedCorpusRevision() {
+      return observedCorpusRevision;
+    },
     getRetrievedSourceIds: () => [...retrievedSourceIds],
     async runTurn(
       input: AgentTurnInput,
@@ -210,6 +214,7 @@ export function createFastApiRunner(options: {
       signal?: AbortSignal,
     ): Promise<AgentTurnResult> {
       retrievedSourceIds = [];
+      observedCorpusRevision = undefined;
       const requestSignal = signal ?? new AbortController().signal;
       const fetchImpl = options.fetchImpl ?? fetch;
       const response = await fetchImpl(`${baseUrl}/v1/question`, {
@@ -253,6 +258,15 @@ export function createFastApiRunner(options: {
           sink.emit(event);
           if (event.type === "answer.completed") answer = event.text;
           if (event.type === "retrieval.completed") {
+            if (
+              event.corpusRevision !== undefined &&
+              observedCorpusRevision !== undefined &&
+              event.corpusRevision !== observedCorpusRevision
+            ) {
+              observedCorpusRevision = "__conflicting_runtime_revision__";
+            } else if (event.corpusRevision !== undefined) {
+              observedCorpusRevision = event.corpusRevision;
+            }
             for (const sourceId of event.acceptedSourceIds ?? []) {
               if (!retrievedSourceIds.includes(sourceId)) {
                 retrievedSourceIds.push(sourceId);

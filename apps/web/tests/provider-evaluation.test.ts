@@ -382,6 +382,24 @@ describe("provider comparison and promotion gates", () => {
     expect(() => compareProviderEvaluations(staleIndex, passingThresholds)).toThrow(
       "observed retrieval corpus revision mismatch",
     );
+    const conflictingRunner = await runPairedEvaluationCase({
+      evaluationCase,
+      hosted: runnerFor("answer", {
+        observedModel: "hosted/model",
+        observedServingRevision: "hosted-1",
+      }),
+      local: {
+        ...runnerFor("answer", {
+          observedModel: "Qwen/Qwen3-8B",
+          observedServingRevision: "vllm-1",
+        }),
+        observedCorpusRevision: "corpus-old",
+      },
+      hostedMetadata: { model: "hosted/model", servingRevision: "hosted-1" },
+      localMetadata: { model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" },
+      corpusRevision: "corpus-1",
+    });
+    expect(conflictingRunner.local.observedCorpusRevision).toBeUndefined();
 
     const forgedIdentity = paired.map((item) => ({
       ...item,

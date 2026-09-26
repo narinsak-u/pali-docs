@@ -117,7 +117,6 @@ function createDependencies(
 
   return {
     retriever: { retrieve },
-    observedServingMetadata: { model: "test/model", servingRevision: "test-1" },
     decide,
     rewrite,
     draftGroundedAnswer,
