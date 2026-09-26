@@ -92,22 +92,18 @@ def _request_id(request: Request) -> str:
     return str(uuid4())
 
 
-def _sse(event: AgentEvent, request_id: str) -> bytes:
-    payload = event.as_dict()
-    event_payload = payload.get("payload")
-    if isinstance(event_payload, dict):
-        payload["payload"] = {**event_payload, "requestId": request_id}
-    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n".encode("utf-8")
+def _sse(event: AgentEvent) -> bytes:
+    return f"data: {json.dumps(event.as_dict(), separators=(',', ':'))}\n\n".encode("utf-8")
 
 
-def _timeout_event(run_id: str, request_id: str) -> AgentEvent:
+def _timeout_event(run_id: str, sequence: int) -> AgentEvent:
     return AgentEvent(
         run_id=run_id,
         event_id=str(uuid4()),
-        sequence=0,
+        sequence=sequence,
         event_type="run.failed",
         timestamp=datetime.now(timezone.utc),
-        payload={"runId": run_id, "requestId": request_id, "code": "timeout"},
+        payload={"runId": run_id, "code": "timeout"},
     )
 
 
@@ -133,11 +129,12 @@ async def _event_stream(
     provider: str = "hosted",
     timeout_seconds: float | None = None,
 ) -> AsyncIterator[bytes]:
-    request_id = request_id or getattr(request.state, "request_id", str(uuid4()))
+    _ = request_id or getattr(request.state, "request_id", str(uuid4()))
     provider = getattr(request.state, "provider", provider)
     timeout_seconds = getattr(request.state, "timeout_seconds", timeout_seconds)
     queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
     cancellation = asyncio.Event()
+    next_sequence = 0
 
     async def emit(event: AgentEvent) -> None:
         await queue.put(event)
@@ -154,7 +151,7 @@ async def _event_stream(
         await asyncio.sleep(timeout_seconds)
         if not cancellation.is_set():
             cancellation.set()
-            await queue.put(_timeout_event(turn.run_id, request_id))
+            await queue.put(_timeout_event(turn.run_id, next_sequence))
 
     runner_task = asyncio.create_task(run())
     watcher_task = asyncio.create_task(_cancel_on_disconnect(request, cancellation))
@@ -169,7 +166,8 @@ async def _event_stream(
                 break
             if terminal_seen:
                 continue
-            yield _sse(event, request_id)
+            next_sequence = max(next_sequence, event.sequence + 1)
+            yield _sse(event)
             if event.event_type in {"run.completed", "run.failed"}:
                 terminal_seen = True
                 code = event.payload.get("code")

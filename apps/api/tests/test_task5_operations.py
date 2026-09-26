@@ -129,7 +129,8 @@ async def test_question_response_correlates_request_and_run_without_exposing_mes
     )
     body = b"".join([chunk async for chunk in response.body_iterator])
     assert response.headers["x-request-id"] == "req-123"
-    assert b'"requestId":"req-123"' in body
+    event = json.loads(body.decode().strip().split("\n\n")[0].removeprefix("data: "))
+    assert "requestId" not in event["payload"]
     assert b"secret prompt" not in body
 
 
@@ -143,10 +144,20 @@ async def test_question_timeout_emits_deterministic_terminal_failure(
 
     async def run_turn(
         self: LangGraphAgentRunner,
-        _turn: object,
-        _event_sink: object,
+        turn: object,
+        event_sink: object,
         _cancellation: object,
     ) -> None:
+        await event_sink(
+            AgentEvent(
+                run_id=turn.run_id,
+                event_id=str(uuid4()),
+                sequence=0,
+                event_type="run.started",
+                timestamp=datetime.now(timezone.utc),
+                payload={"runId": turn.run_id},
+            )
+        )
         await __import__("asyncio").sleep(1)
 
     monkeypatch.setattr(LangGraphAgentRunner, "run_turn", run_turn)
@@ -164,6 +175,11 @@ async def test_question_timeout_emits_deterministic_terminal_failure(
         ),
     )
     body = b"".join([chunk async for chunk in response.body_iterator])
+    events = [
+        json.loads(part.removeprefix("data: "))
+        for part in body.decode().strip().split("\n\n")
+    ]
+    assert events[-1]["sequence"] == events[0]["sequence"] + 1
     assert b'"eventType":"run.failed"' in body
     assert b'"code":"timeout"' in body
 

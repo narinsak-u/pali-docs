@@ -67,3 +67,29 @@ The execution host is Apple Silicon Darwin without a Linux NVIDIA GPU, `nvidia-s
 - Exercise the documented non-thinking completion request and observe the real vLLM health/model identity behavior.
 - Confirm production ingress/firewall policy keeps vLLM private and exposes only the authenticated FastAPI/BFF boundary.
 - Confirm production scraping uses the authenticated `/metrics` route and does not bypass the API authorization layer.
+
+## Review follow-up
+
+The review caught two public-stream compatibility issues and both were fixed:
+
+- Request correlation is header-only (`X-Request-ID`). SSE event payloads remain byte/schema-compatible with the existing strict web LangGraph adapter; no undeclared `requestId` payload key is emitted.
+- Timeout terminal events use the next monotonic sequence after all streamed events and contain only the existing `runId`/`code` payload fields.
+
+RED evidence for the review fixes:
+
+```text
+$ PYTHONPATH=apps/api apps/api/.venv/bin/pytest -q apps/api/tests/test_task5_operations.py::test_question_response_correlates_request_and_run_without_exposing_message apps/api/tests/test_task5_operations.py::test_question_timeout_emits_deterministic_terminal_failure
+2 failed
+- unexpected requestId payload key
+- timeout sequence remained 0 after run.started sequence 0
+```
+
+GREEN evidence:
+
+```text
+$ PYTHONPATH=apps/api apps/api/.venv/bin/pytest -q apps/api/tests/test_task5_operations.py::test_question_response_correlates_request_and_run_without_exposing_message apps/api/tests/test_task5_operations.py::test_question_timeout_emits_deterministic_terminal_failure
+2 passed, 20 warnings
+
+$ PYTHONPATH=apps/api apps/api/.venv/bin/pytest -q apps/api/tests/test_task5_operations.py apps/api/tests/test_question.py apps/api/tests/test_provider_contract.py
+30 passed, 135 warnings
+```
