@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -292,3 +293,60 @@ async def test_valid_citations_answer_and_emit_monotonic_v1_envelopes() -> None:
             "parentId": "parent-1",
         }
     ]
+
+@pytest.mark.asyncio
+async def test_runner_cancellation_during_retrieval_preserves_scope_and_outcome() -> None:
+    cancellation = asyncio.Event()
+    retrieval_started = asyncio.Event()
+    retrieval_release = asyncio.Event()
+    events: list[Any] = []
+    observed_scopes: list[dict[str, object] | None] = []
+    retrieval_cancelled = False
+
+    class BlockingRetriever:
+        async def retrieve(
+            self,
+            _query: str,
+            _attempt: int,
+            access_scope: dict[str, object] | None = None,
+        ) -> GroundingBundle:
+            nonlocal retrieval_cancelled
+            observed_scopes.append(access_scope)
+            retrieval_started.set()
+            try:
+                await retrieval_release.wait()
+            except asyncio.CancelledError:
+                retrieval_cancelled = True
+                raise
+            return grounded_bundle()
+
+    runner_task = asyncio.create_task(
+        LangGraphAgentRunner(
+            BlockingRetriever(),
+            FakeStages(RetrievalDecision(needsRetrieval=True, query="passage")),
+        ).run_turn(
+            AgentTurnInput(
+                run_id="cancelled-run",
+                messages=[AgentMessage(role="user", content="What is this passage?")],
+                access_scope={"tenant": "tenant-1"},
+            ),
+            events.append,
+            cancellation,
+        )
+    )
+    await retrieval_started.wait()
+    cancellation.set()
+    result = await runner_task
+
+    assert isinstance(result, TerminalResult)
+    assert result.outcome == "failed"
+    assert result.code == "aborted"
+    assert retrieval_cancelled
+    assert observed_scopes == [{"tenant": "tenant-1"}]
+    assert [event.event_type for event in events] == [
+        "run.started",
+        "retrieval.started",
+        "retrieval.failed",
+        "run.failed",
+    ]
+    assert events[-1].payload["code"] == "aborted"
