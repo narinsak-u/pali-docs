@@ -313,18 +313,26 @@ class PineconePublisher:
             raise PublishError("embedding_batch_size must be positive")
         positions_by_source: dict[str, int] = {}
         section_indices_by_source: dict[str, int] = {}
-        last_section_by_source: dict[str, str | None] = {}
+        last_parent_by_source: dict[
+            str, tuple[str, str, str | None, str | None]
+        ] = {}
         parent_section_indices: list[int] = []
         for chunk in chunk_list:
             expected_position = positions_by_source.get(chunk.source_id, 0)
             if chunk.index != expected_position:
                 raise PublishError("chunk positions must be deterministic and contiguous")
             positions_by_source[chunk.source_id] = expected_position + 1
+            parent_boundary = (
+                chunk.source_id,
+                chunk.source_version,
+                chunk.section,
+                chunk.parent_text,
+            )
             if chunk.source_id not in section_indices_by_source:
                 section_indices_by_source[chunk.source_id] = 0
-            elif chunk.section != last_section_by_source[chunk.source_id]:
+            elif parent_boundary != last_parent_by_source[chunk.source_id]:
                 section_indices_by_source[chunk.source_id] += 1
-            last_section_by_source[chunk.source_id] = chunk.section
+            last_parent_by_source[chunk.source_id] = parent_boundary
             parent_section_indices.append(section_indices_by_source[chunk.source_id])
         policies = {chunk.chunking_policy for chunk in chunk_list}
         if None in policies or len(policies) != 1:

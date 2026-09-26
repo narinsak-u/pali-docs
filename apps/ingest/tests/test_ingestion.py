@@ -218,6 +218,34 @@ def test_publisher_includes_hierarchy_metadata() -> None:
     assert seen[0]["parentText"] == chunks[0].parent_text
 
 
+def test_publisher_accepts_repeated_heading_parent_identity() -> None:
+    chunks = chunk_text(
+        "# Intro\n\nFirst passage.\n\n# Intro\n\nSecond passage.",
+        source_id="docs/guide",
+        source_version="abc123",
+        title="Guide",
+    )
+    seen: list[dict[str, object]] = []
+    publisher = PineconePublisher(
+        IngestSettings(),
+        embed_fn=lambda texts: {
+            "data": [{"values": [1.0, 2.0]} for _ in texts]
+        },
+        upsert_fn=lambda records, _namespace: (
+            seen.extend(record["metadata"] for record in records)
+            or {"upserted_count": len(records)}
+        ),
+        stats_fn=lambda _namespace: {"namespaces": {"staging-rev-abc": {"vector_count": 2}}},
+    )
+
+    asyncio.run(publisher.publish(chunks, "rev-abc"))
+
+    assert [record["parentId"] for record in seen] == [
+        chunk.parent_id for chunk in chunks
+    ]
+    assert seen[0]["parentId"] != seen[-1]["parentId"]
+
+
 def test_publisher_bounds_parent_context_before_upsert() -> None:
     chunks = chunk_text(
         "# Intro\n\n" + ("long parent context " * 300),

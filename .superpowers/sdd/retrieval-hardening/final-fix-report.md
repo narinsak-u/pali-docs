@@ -22,3 +22,21 @@ Tests       1 passed (1)
 ```
 
 The API tests cover non-canonical values (`yes`, `1`, uppercase, and whitespace variants), canonical `true`/`false` environment values, and dense-default parity. The ingestion regression test asserts that forged parent identity causes `PublishError` with zero external callback calls.
+
+## Round-two review fix
+
+Publisher section boundaries now use the same `(source_id, source_version, section, parent_text)` parent key as manifest validation. This preserves distinct section occurrences when headings repeat, while retaining the forged-parent rejection before external calls.
+
+```text
+$ apps/ingest/.venv/bin/python -m pytest -q apps/ingest/tests/test_ingestion.py -k repeated_heading
+.                                                                        [100%]
+1 passed, 17 deselected in 0.03s
+
+$ apps/ingest/.venv/bin/python -m pytest -q apps/ingest/tests/test_ingestion.py -k forged_parent
+.                                                                        [100%]
+1 passed, 17 deselected in 0.03s
+
+$ apps/ingest/.venv/bin/python -m pytest -q apps/ingest/tests/test_ingestion.py
+..................                                                       [100%]
+18 passed in 0.06s
+```
