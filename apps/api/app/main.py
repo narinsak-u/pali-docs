@@ -103,6 +103,31 @@ def readyz() -> JSONResponse:
         )
 
 
+@app.get("/internal/readyz", tags=["health"])
+def internal_readyz(
+    authorization: Annotated[str | None, Header()] = None,
+) -> JSONResponse:
+    """Return authenticated, server-safe serving identity for evaluation runners."""
+    _authorize(authorization, _configured_token())
+    readiness = readyz()
+    if readiness.status_code != 200:
+        return readiness
+    settings = get_settings()
+    if settings.PROVIDER_NAME != "local":
+        return JSONResponse(status_code=503, content={"status": "not_ready", "service": "api"})
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "ready",
+            "service": "api",
+            "model": QWEN3_VLLM_PROFILE.model_id,
+            "servingRevision": QWEN3_VLLM_PROFILE.model_revision,
+            "imageDigest": QWEN3_VLLM_PROFILE.image,
+            "tokenizer": QWEN3_VLLM_PROFILE.tokenizer_id,
+        },
+    )
+
+
 @app.get("/metrics", tags=["health"], response_class=PlainTextResponse)
 def protected_metrics(
     authorization: Annotated[str | None, Header()] = None,

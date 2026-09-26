@@ -268,7 +268,7 @@ describe("FastAPI runner", () => {
       }),
     ].join("");
     const fetchImpl = vi.fn(async (url: any, request: any) => {
-      if (url === "https://api.example/readyz") {
+      if (url === "https://api.example/internal/readyz") {
         return new Response(JSON.stringify({ model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" }), {
           status: 200,
           headers: { "content-type": "application/json" },

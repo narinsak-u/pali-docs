@@ -224,7 +224,7 @@ export function createFastApiRunner(options: {
       observedServingMetadata = undefined;
       const requestSignal = signal ?? new AbortController().signal;
       const fetchImpl = options.fetchImpl ?? fetch;
-      const readyResponse = await fetchImpl(`${baseUrl}/readyz`, {
+      const readyResponse = await fetchImpl(`${baseUrl}/internal/readyz`, {
         headers: { Authorization: `Bearer ${internalToken}` },
         signal: requestSignal,
       });

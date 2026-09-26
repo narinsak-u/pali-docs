@@ -54,6 +54,32 @@ async def test_readiness_is_explicit_and_fails_closed_when_local_vllm_is_unavail
 
 
 @pytest.mark.asyncio
+async def test_internal_readiness_requires_bearer_and_returns_pinned_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "internal-token")
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "check_vllm_readiness", lambda *args, **kwargs: "Qwen/Qwen3-8B")
+    transport = httpx.ASGITransport(app=main_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        denied = await client.get("/internal/readyz")
+        allowed = await client.get(
+            "/internal/readyz", headers={"Authorization": "Bearer internal-token"}
+        )
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    assert allowed.json() == {
+        "status": "ready",
+        "service": "api",
+        "model": "Qwen/Qwen3-8B",
+        "servingRevision": "b968826d9c46dd6066d109eabc6255188de91218",
+        "imageDigest": "vllm/vllm-openai@sha256:df2c55e5107afea09ea1a50f9dd96c99ebf97a795334c4d08f691f3d79b2ab12",
+        "tokenizer": "Qwen/Qwen3-8B",
+    }
+
+
+@pytest.mark.asyncio
 async def test_metrics_requires_internal_bearer_and_contains_only_operational_labels(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
