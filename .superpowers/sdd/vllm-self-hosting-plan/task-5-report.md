@@ -93,3 +93,17 @@ $ PYTHONPATH=apps/api apps/api/.venv/bin/pytest -q apps/api/tests/test_task5_ope
 $ PYTHONPATH=apps/api apps/api/.venv/bin/pytest -q apps/api/tests/test_task5_operations.py apps/api/tests/test_question.py apps/api/tests/test_provider_contract.py
 30 passed, 135 warnings
 ```
+
+## Race follow-up
+
+Re-review identified a timeout race: allocating the timeout sequence in the watcher could snapshot a stale `next_sequence` while earlier events were queued but not yet consumed. The timeout watcher now enqueues a private marker; the stream consumer converts that marker into the terminal event only after consuming prior queue entries, allocating the next monotonic sequence centrally. The marker is never serialized.
+
+The deterministic timeout regression emits `run.started` sequence `0`, keeps the runner active while timeout fires, and asserts exactly one terminal `run.failed` event at sequence `1`. Focused GREEN evidence:
+
+```text
+$ PYTHONPATH=apps/api apps/api/.venv/bin/pytest -q apps/api/tests/test_task5_operations.py::test_question_timeout_allocates_sequence_after_queued_prior_event
+pytest: 1 passed, 11 warnings
+
+$ PYTHONPATH=apps/api apps/api/.venv/bin/pytest -q apps/api/tests/test_task5_operations.py apps/api/tests/test_question.py
+pytest: 14 passed, 65 warnings
+```

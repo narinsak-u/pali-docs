@@ -107,6 +107,11 @@ def _timeout_event(run_id: str, sequence: int) -> AgentEvent:
     )
 
 
+class _TimeoutMarker:
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+
+
 async def _cancel_on_disconnect(request: Request, cancellation: asyncio.Event) -> None:
     try:
         while not cancellation.is_set():
@@ -132,7 +137,7 @@ async def _event_stream(
     _ = request_id or getattr(request.state, "request_id", str(uuid4()))
     provider = getattr(request.state, "provider", provider)
     timeout_seconds = getattr(request.state, "timeout_seconds", timeout_seconds)
-    queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
+    queue: asyncio.Queue[AgentEvent | _TimeoutMarker | None] = asyncio.Queue()
     cancellation = asyncio.Event()
     next_sequence = 0
 
@@ -151,7 +156,7 @@ async def _event_stream(
         await asyncio.sleep(timeout_seconds)
         if not cancellation.is_set():
             cancellation.set()
-            await queue.put(_timeout_event(turn.run_id, next_sequence))
+            await queue.put(_TimeoutMarker(turn.run_id))
 
     runner_task = asyncio.create_task(run())
     watcher_task = asyncio.create_task(_cancel_on_disconnect(request, cancellation))
@@ -159,13 +164,14 @@ async def _event_stream(
     terminal_seen = False
     try:
         while True:
-            event = await queue.get()
-            if event is None:
+            item = await queue.get()
+            if item is None:
                 if not terminal_seen and not cancellation.is_set():
                     raise RuntimeError("runner completed without a terminal event")
                 break
             if terminal_seen:
                 continue
+            event = _timeout_event(item.run_id, next_sequence) if isinstance(item, _TimeoutMarker) else item
             next_sequence = max(next_sequence, event.sequence + 1)
             yield _sse(event)
             if event.event_type in {"run.completed", "run.failed"}:

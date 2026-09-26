@@ -135,7 +135,7 @@ async def test_question_response_correlates_request_and_run_without_exposing_mes
 
 
 @pytest.mark.asyncio
-async def test_question_timeout_emits_deterministic_terminal_failure(
+async def test_question_timeout_allocates_sequence_after_queued_prior_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings(LOCAL_LLM_TIMEOUT_SECONDS=0.01)
