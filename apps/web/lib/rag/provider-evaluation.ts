@@ -43,6 +43,7 @@ export interface EvaluationThresholds {
   maxToolFailureRate?: number;
 }
 export interface ProviderTrace {
+  schemaVersion: "v1";
   toolEvents?: Array<{
     type: "started" | "completed" | "failed";
     toolId: string;
@@ -120,7 +121,7 @@ export interface ProviderTrace {
     succeeded: number;
     failed: number;
   };
-  toolTelemetryPresent: boolean;
+  toolTelemetryPresent?: boolean;
   failure?: string;
   cancelled?: boolean;
   cost?: number;
@@ -199,10 +200,12 @@ interface RunMetrics {
   candidateCount?: number;
   acceptedCount?: number;
   answer?: string;
+  capacity: ProviderTrace["capacity"];
+  cost?: number;
   failure?: string;
   cancelled?: boolean;
   tools: ProviderTrace["tools"];
-  toolEvents: ProviderTrace["toolEvents"];
+  toolEvents: NonNullable<ProviderTrace["toolEvents"]>;
   toolTelemetryPresent: boolean;
   toolTelemetryMalformed: boolean;
 }
@@ -927,16 +930,37 @@ export function compareProviderEvaluations(
     hosted: aggregate("hosted", paired),
     local: aggregate("local", paired),
   } satisfies Record<EvaluationProvider, ProviderAggregate>;
+  const gates = {
+    hosted: evaluateGate(aggregates.hosted, normalizedThresholds, "hosted"),
+    local: evaluateGate(aggregates.local, normalizedThresholds, "local"),
+  } satisfies Record<EvaluationProvider, ProviderGateResult>;
+  for (const provider of ["hosted", "local"] as const) {
+    const traces = paired.map((item) => item[provider]);
+    const missingEvidence = traces.some((trace) => trace.evidence === undefined);
+    if (missingEvidence && normalizedThresholds.maxLatencyP95Ms >= 0) {
+      gates[provider].pass = false;
+      gates[provider].violations.push(`${provider} latency evidence is incomplete`);
+    }
+    if (missingEvidence && normalizedThresholds.maxCost !== undefined) {
+      gates[provider].pass = false;
+      gates[provider].violations.push(`${provider} cost evidence is incomplete`);
+    }
+    if (missingEvidence && normalizedThresholds.maxFailureRate >= 0) {
+      gates[provider].pass = false;
+      gates[provider].violations.push(`${provider} run evidence is incomplete`);
+    }
+    if (missingEvidence && normalizedThresholds.maxCancellationRate >= 0) {
+      gates[provider].pass = false;
+      gates[provider].violations.push(`${provider} cancellation evidence is incomplete`);
+    }
+  }
   return {
     schemaVersion: "v1",
     caseCount: paired.length,
     thresholds: normalizedThresholds,
     paired: [...paired],
     aggregates,
-    gates: {
-      hosted: evaluateGate(aggregates.hosted, normalizedThresholds, "hosted"),
-      local: evaluateGate(aggregates.local, normalizedThresholds, "local"),
-    },
+    gates,
   };
 }
 

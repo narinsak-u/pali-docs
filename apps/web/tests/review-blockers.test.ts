@@ -3,6 +3,7 @@ import {
   compareProviderEvaluations,
   decidePromotion,
   type PairedEvaluation,
+  type ProviderTrace,
   type EvaluationThresholds,
 } from "@/lib/rag/provider-evaluation";
 import * as ProviderEvaluation from "@/lib/rag/provider-evaluation";
@@ -149,11 +150,15 @@ describe("whole-branch blocker regressions", () => {
       "trace metric evidence mismatch",
     );
   });
-  it("accepts legacy v1 traces without tool evidence when no tool gate is active", () => {
+  it("parses legacy v1 traces but fails active latency and cost gates without evidence", () => {
     const original = paired();
-    const legacyTrace = (value: typeof trace) => {
+    const legacyTrace = (value: ProviderTrace): ProviderTrace => {
       const { evidence, toolEvents, toolTelemetryPresent, ...legacy } = value;
-      return legacy;
+      return {
+        ...legacy,
+        latency: { ...legacy.latency, totalMs: 0 },
+        cost: 0,
+      } as ProviderTrace;
     };
     const comparison = compareProviderEvaluations(
       [
@@ -163,14 +168,20 @@ describe("whole-branch blocker regressions", () => {
           local: legacyTrace(original.local),
         },
       ],
-      thresholds,
+      { ...thresholds, maxCost: 1 },
+    );
+
+    expect(comparison.gates.local.violations).toEqual(
+      expect.arrayContaining([
+        "local latency evidence is incomplete",
+        "local cost evidence is incomplete",
+      ]),
     );
     const decision = decidePromotion({
       comparison,
       reviewedCases: undefined,
       productionBaseline: undefined,
     });
-
     expect(decision.reasons).not.toContain("provider comparison is stale or forged");
   });
   it("rejects trace mappings that do not match authoritative reviewed cases", () => {
