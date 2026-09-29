@@ -381,14 +381,19 @@ describe("provider comparison and promotion gates", () => {
         rollbackReady: true,
       }).reasons,
     ).toContain("ProductionBaseline attestation is invalid");
-    expect(
-      decidePromotion({
-        comparison,
-        reviewedCases: { ...reviewedCases, corpusRevision: "corpus-old" },
-        productionBaseline,
-        rollbackReady: true,
-      }).promote,
-    ).toBe(false);
+    const staleCasesDecision = decidePromotion({
+      comparison,
+      reviewedCases: { ...reviewedCases, corpusRevision: "corpus-old" },
+      productionBaseline,
+      rollbackReady: true,
+    });
+    expect(staleCasesDecision.promote).toBe(false);
+    expect(staleCasesDecision.reasons).toContain(
+      "hosted trace CorpusRevision mismatch for case reviewed-0",
+    );
+    expect(staleCasesDecision.reasons).toContain(
+      "local trace CorpusRevision mismatch for case reviewed-0",
+    );
 
     const staleIndex = paired.map((item) => ({
       ...item,

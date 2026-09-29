@@ -1618,6 +1618,7 @@ export function decidePromotion(options: {
         trace.grounding.corpusRevision !== cases.corpusRevision ||
         trace.observedCorpusRevision !== cases.corpusRevision
       ) {
+        reasons.push(`${provider} trace CorpusRevision mismatch for case ${item.caseId}`);
       }
       const observedIdentity = trace.observedServingMetadata;
       const traceIdentity = {
