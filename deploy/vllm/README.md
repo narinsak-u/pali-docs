@@ -64,12 +64,14 @@ The hosted provider remains the rollback path: keep the existing `PROVIDER_NAME=
 Run this from the repository root after startup:
 
 ```bash
+cd apps/api
 LOCAL_LLM_BASE_URL=http://127.0.0.1:8000/v1 \
 LOCAL_LLM_API_KEY="$VLLM_API_KEY" \
-apps/api/.venv/bin/python apps/api/scripts/check_vllm.py
+uv run python scripts/check_vllm.py
+cd ../..
 ```
 
-The checker requires `/health`, exactly one `/v1/models` entry with ID `Qwen/Qwen3-8B`, and a successful non-thinking `/v1/chat/completions` response. It exits non-zero for an unavailable endpoint, malformed response, multiple models, model identity mismatch, or an empty completion. The FastAPI `/internal/readyz` response additionally records the tokenizer revision, parser, chat template, precision, image digest, and the pinned serving limits above; comparison runs reject incomplete or mismatched identity.
+The checker requires `/health`, exactly one `/v1/models` entry with ID `Qwen/Qwen3-8B`, and a successful non-thinking, non-streaming `/v1/chat/completions` response. It exits non-zero for an unavailable endpoint, malformed response, multiple models, model identity mismatch, an empty completion, or a streaming response. The FastAPI `/internal/readyz` response additionally records the tokenizer revision, parser, chat template, precision, image digest, and the pinned serving limits above; comparison runs reject incomplete or mismatched identity.
 
 ## Basic non-thinking completion smoke
 

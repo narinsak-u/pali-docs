@@ -145,6 +145,7 @@ def _check_non_thinking_completion(
             "messages": [{"role": "user", "content": "Reply with one word: ready"}],
             "temperature": 0,
             "max_tokens": 1,
+            "stream": False,
             "chat_template_kwargs": dict(QWEN3_VLLM_PROFILE.chat_template_kwargs),
         }
     ).encode("utf-8")

@@ -66,4 +66,40 @@ def test_readiness_requires_a_bounded_non_thinking_completion(monkeypatch) -> No
         api_key="vllm-key",
     ) == "Qwen/Qwen3-8B"
     assert requests[2].full_url == "http://vllm.internal:8000/v1/chat/completions"
+
+def test_readiness_completion_check_explicitly_disables_streaming(monkeypatch) -> None:
+    import json
+
+    class Response:
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+            self.status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self.body
+
+    responses = iter(
+        [
+            Response(b""),
+            Response(b'{"data":[{"id":"Qwen/Qwen3-8B"}]}'),
+            Response(b'{"choices":[{"message":{"content":"ok"}}]}'),
+        ]
+    )
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        return next(responses)
+
+    monkeypatch.setattr("app.vllm_profile.urlopen", fake_urlopen)
+
+    assert check_vllm_readiness("http://vllm.internal:8000/v1", api_key="vllm-key")
+    completion = json.loads(requests[2].data)
+    assert completion["stream"] is False
     assert requests[2].headers["Authorization"] == "Bearer vllm-key"
