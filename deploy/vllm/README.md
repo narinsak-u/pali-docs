@@ -46,6 +46,8 @@ docker compose up -d
 
 The compose profile binds `127.0.0.1:8000` only. If FastAPI runs in a separate private network, use that network's private address and firewall policy; do not expose vLLM to the public interface.
 
+The vLLM host port is loopback-only and the container requires `VLLM_API_KEY` for inference, model listing, and completion probes. Keep `/health` reachable only from the private FastAPI/monitoring network; it is a liveness probe, not a public API. FastAPI exposes public liveness at `/healthz`, provider readiness at `/readyz`, and authenticated operator details/metrics at `/internal/readyz` and `/metrics`.
+
 Configure the FastAPI process (not the browser or Next.js public environment) with the local provider contract and a separate signed-identity secret:
 
 ```text
@@ -55,8 +57,11 @@ LOCAL_LLM_API_KEY=<the same server-only key>
 LOCAL_LLM_MODEL=Qwen/Qwen3-8B
 LOCAL_LLM_TIMEOUT_SECONDS=45
 LOCAL_LLM_MAX_OUTPUT_TOKENS=768
+LOCAL_LLM_MAX_INFLIGHT=1
+LOCAL_LLM_RATE_LIMIT_PER_MINUTE=60
 INTERNAL_PRINCIPAL_SECRET=<shared only with the trusted BFF>
 ```
+`LOCAL_LLM_ENABLED=false` is the server-owned kill switch: new Runs select the configured hosted provider and existing streams are allowed to finish or cancel through the same terminal SSE contract. Keep hosted credentials configured on the API process so rollback does not require a browser release.
 
 The hosted provider remains the rollback path: keep the existing `PROVIDER_NAME=openrouter` or `PROVIDER_NAME=opencode` configuration in the hosted environment. Do not add local endpoint or credentials to browser-facing Next.js variables.
 
@@ -72,7 +77,7 @@ uv run python scripts/check_vllm.py
 cd ../..
 ```
 
-The checker requires `/health`, exactly one `/v1/models` entry with ID `Qwen/Qwen3-8B`, and a successful non-thinking, non-streaming `/v1/chat/completions` response. It exits non-zero for an unavailable endpoint, malformed response, multiple models, model identity mismatch, an empty completion, or a streaming response. The FastAPI `/internal/readyz` response additionally records the tokenizer revision, parser, chat template, precision, image digest, and the pinned serving limits above; comparison runs reject incomplete or mismatched identity.
+The checker requires `/health`, exactly one `/v1/models` entry with ID `Qwen/Qwen3-8B`, a successful non-thinking, non-streaming completion, and two serialized strict retrieval tool calls. It exits non-zero for an unavailable endpoint, malformed response, multiple models, model identity mismatch, an empty completion, or a streaming response. The FastAPI path additionally enforces bounded request size, one local in-flight run by default, per-tenant rate limiting, and deterministic timeout/cancellation cleanup. `/internal/readyz` records the tokenizer revision, parser, chat template, precision, image digest, and pinned serving limits; comparison runs reject incomplete or mismatched identity.
 
 ## Basic non-thinking completion smoke
 

@@ -60,6 +60,7 @@ class AgentGraphState(TypedDict, total=False):
     retrieval_attempt: int
     grounding: GroundingBundle
     retrieval_failed: bool
+    retrieval_unavailable: bool
     answer_draft: GroundedAnswer
     answer: str
     citations: list[object]
@@ -655,6 +656,10 @@ def _telemetry_payload(config: object) -> dict[str, object]:
         "queueMs",
         "ttftMs",
         "interTokenLatencyMs",
+        "kvCacheUsage",
+        "preemptions",
+        "oomSignals",
+        "restartSignals",
     }
     return {
         key: value

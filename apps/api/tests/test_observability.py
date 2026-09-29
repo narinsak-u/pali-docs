@@ -14,6 +14,10 @@ def test_metrics_render_observed_usage_without_raw_payloads() -> None:
         queue_ms=4.5,
         ttft_ms=12.25,
         inter_token_latency_ms=3.75,
+        kv_cache_usage=0.42,
+        preemptions=3,
+        oom_signals=1,
+        restart_signals=2,
     )
 
     rendered = metrics.render()
@@ -25,4 +29,8 @@ def test_metrics_render_observed_usage_without_raw_payloads() -> None:
     assert 'vllm_time_to_first_token_ms_total{provider="local"} 12.25' in rendered
     assert 'vllm_inter_token_latency_ms_total{provider="local"} 3.75' in rendered
     assert 'vllm_generation_duration_ms_total{provider="local"} 125.5' in rendered
+    assert 'vllm_kv_cache_usage_ratio{provider="local"} 0.42' in rendered
+    assert 'vllm_preemptions_total{provider="local"} 3' in rendered
+    assert 'vllm_oom_signals_total{provider="local"} 1' in rendered
+    assert 'vllm_restart_signals_total{provider="local"} 2' in rendered
     assert "secret prompt" not in rendered

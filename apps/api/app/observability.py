@@ -25,6 +25,10 @@ class OperationalMetrics:
         queue_ms: int | float | None = None,
         ttft_ms: int | float | None = None,
         inter_token_latency_ms: int | float | None = None,
+        kv_cache_usage: int | float | None = None,
+        preemptions: int | None = None,
+        oom_signals: int | None = None,
+        restart_signals: int | None = None,
     ) -> None:
         provider_label = "local" if provider == "local" else "hosted"
         values = {
@@ -35,6 +39,10 @@ class OperationalMetrics:
             "queue_duration_ms_total": queue_ms,
             "time_to_first_token_ms_total": ttft_ms,
             "inter_token_latency_ms_total": inter_token_latency_ms,
+            "kv_cache_usage_ratio": kv_cache_usage,
+            "preemptions_total": preemptions,
+            "oom_signals_total": oom_signals,
+            "restart_signals_total": restart_signals,
         }
         with self._lock:
             for metric, value in values.items():
@@ -42,15 +50,33 @@ class OperationalMetrics:
                     isinstance(value, (int, float))
                     and not isinstance(value, bool)
                     and value >= 0
+                    and (
+                        metric != "kv_cache_usage_ratio"
+                        or value <= 1
+                    )
                 ):
-                    self._usage[(provider_label, metric)] += value
+                    if metric == "kv_cache_usage_ratio":
+                        self._usage[(provider_label, metric)] = value
+                    else:
+                        self._usage[(provider_label, metric)] += value
     def observe_request(self, *, provider: str, outcome: str, code: str | None = None) -> None:
         provider_label = "local" if provider == "local" else "hosted"
         outcome_label = outcome if outcome in {"completed", "failed", "cancelled", "timeout"} else "failed"
         with self._lock:
             self._requests[(provider_label, outcome_label)] += 1
             if outcome_label != "completed":
-                failure_code = code if code in {"aborted", "timeout", "runner_error", "service_unavailable"} else "unknown"
+                failure_code = (
+                    code
+                    if code in {
+                        "aborted",
+                        "timeout",
+                        "runner_error",
+                        "service_unavailable",
+                        "capacity_exceeded",
+                        "rate_limited",
+                    }
+                    else "unknown"
+                )
                 self._failures[(provider_label, failure_code)] += 1
 
     def set_readiness(self, *, provider: str, ready: bool) -> None:

@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from app import main as main_module
 from app import question as question_module
 from app.agent.runner import LangGraphAgentRunner
+from app.vllm_profile import VllmReadinessError
 from app.agent.types import AgentEvent
 from app.config import Settings
 
@@ -75,6 +76,33 @@ async def test_readiness_is_explicit_and_fails_closed_when_local_vllm_is_unavail
     assert liveness.json() == {"status": "ok", "service": "api"}
     assert readiness.status_code == 503
     assert readiness.json() == {"status": "not_ready", "service": "api"}
+
+
+@pytest.mark.asyncio
+async def test_readiness_distinguishes_model_loading_from_application_liveness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        main_module,
+        "check_vllm_readiness",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            VllmReadinessError("loading", state="model_loading")
+        ),
+    )
+    transport = httpx.ASGITransport(app=main_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        liveness = await client.get("/healthz")
+        readiness = await client.get("/readyz")
+
+    assert liveness.json() == {"status": "ok", "service": "api"}
+    assert readiness.status_code == 503
+    assert readiness.json() == {
+        "status": "loading",
+        "service": "api",
+        "reason": "model_loading",
+    }
 
 
 @pytest.mark.asyncio
@@ -334,6 +362,15 @@ def test_question_request_limits_remain_bounded() -> None:
                 "unexpected": "nope",
             }
         )
+
+
+def test_local_rate_limiter_is_bounded_per_tenant() -> None:
+    limiter = question_module._SlidingWindowRateLimiter()
+
+    assert limiter.allow("tenant-a", 1, now=100.0)
+    assert not limiter.allow("tenant-a", 1, now=101.0)
+    assert limiter.allow("tenant-b", 1, now=101.0)
+    assert limiter.allow("tenant-a", 1, now=161.0)
 
 
 @pytest.mark.asyncio

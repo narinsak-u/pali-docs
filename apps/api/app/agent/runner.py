@@ -270,8 +270,16 @@ class LangChainModelStages:
             "queueMs": ("queue_ms", "queue_time_ms"),
             "ttftMs": ("ttft_ms", "time_to_first_token_ms"),
             "interTokenLatencyMs": ("inter_token_latency_ms",),
+            "kvCacheUsage": (
+                "kv_cache_usage",
+                "kv_cache_usage_ratio",
+                "kv_cache_usage_percent",
+            ),
+            "preemptions": ("preemptions", "preemption_count"),
+            "oomSignals": ("oom_signals", "oom_count"),
+            "restartSignals": ("restart_signals", "restart_count"),
         }
-        for source in sources:
+        for source in tuple(sources):
             if not isinstance(source, Mapping):
                 continue
             token_usage = source.get("token_usage")
@@ -290,6 +298,7 @@ class LangChainModelStages:
                             and value >= 0
                             and (
                                 output_key.endswith("Ms")
+                                or output_key == "kvCacheUsage"
                                 or isinstance(value, int)
                             )
                         )
@@ -311,19 +320,31 @@ class LangChainModelStages:
             parameter.kind is inspect.Parameter.VAR_KEYWORD
             for parameter in parameters.values()
         )
-        if self._provider() != "local":
-            response = (
-                await invoke(messages, config=invoke_config)
-                if supports_config
-                else await invoke(messages)
-            )
-        else:
-            async with _local_call_lock():
+        try:
+            if self._provider() != "local":
                 response = (
                     await invoke(messages, config=invoke_config)
                     if supports_config
                     else await invoke(messages)
                 )
+            else:
+                async with _local_call_lock():
+                    response = (
+                        await invoke(messages, config=invoke_config)
+                        if supports_config
+                        else await invoke(messages)
+                    )
+        except Exception as error:
+            text = str(error).lower()
+            if "out of memory" in text or "cuda oom" in text:
+                self._telemetry["oomSignals"] = self._telemetry.get("oomSignals", 0) + 1
+            if "preempt" in text:
+                self._telemetry["preemptions"] = self._telemetry.get("preemptions", 0) + 1
+            if any(marker in text for marker in ("connection reset", "connection refused", "server disconnected")):
+                self._telemetry["restartSignals"] = (
+                    self._telemetry.get("restartSignals", 0) + 1
+                )
+            raise
         self._telemetry["generationMs"] = round(
             float(self._telemetry.get("generationMs", 0)) + (perf_counter() - started) * 1000,
             3,

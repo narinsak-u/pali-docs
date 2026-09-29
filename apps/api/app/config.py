@@ -69,8 +69,11 @@ class Settings(BaseSettings):
     LOCAL_LLM_BASE_URL: str | None = None
     LOCAL_LLM_API_KEY: str | None = None
     LOCAL_LLM_MODEL: str | None = None
+    LOCAL_LLM_ENABLED: bool = True
     LOCAL_LLM_TIMEOUT_SECONDS: float = Field(default=60, gt=0, le=300)
     LOCAL_LLM_MAX_OUTPUT_TOKENS: int = Field(default=768, ge=1, le=768)
+    LOCAL_LLM_MAX_INFLIGHT: int = Field(default=1, ge=1, le=4)
+    LOCAL_LLM_RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=600)
 
     PINECONE_API_KEY: str = Field(min_length=1)
     PINECONE_INDEX_NAME: str = Field(min_length=1)
@@ -147,6 +150,25 @@ class Settings(BaseSettings):
                 )
         return self
 
+def selected_provider(settings: object) -> Literal["openrouter", "opencode", "local"]:
+    provider = getattr(settings, "PROVIDER_NAME", "openrouter")
+    if provider != "local" or getattr(settings, "LOCAL_LLM_ENABLED", True):
+        return provider
+    if (
+        isinstance(getattr(settings, "OPENROUTER_API_KEY", None), str)
+        and isinstance(getattr(settings, "OPENROUTER_LLM_MODEL", None), str)
+        and getattr(settings, "OPENROUTER_API_KEY").strip()
+        and getattr(settings, "OPENROUTER_LLM_MODEL").strip()
+    ):
+        return "openrouter"
+    if (
+        isinstance(getattr(settings, "OPENCODE_API_KEY", None), str)
+        and isinstance(getattr(settings, "OPENCODE_LLM_MODEL", None), str)
+        and getattr(settings, "OPENCODE_API_KEY").strip()
+        and getattr(settings, "OPENCODE_LLM_MODEL").strip()
+    ):
+        return "opencode"
+    raise ValueError("Local provider rollback requires hosted provider credentials")
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

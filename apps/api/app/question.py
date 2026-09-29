@@ -5,10 +5,14 @@ import json
 import os
 import re
 import secrets
+import threading
+from collections import deque
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Annotated, Literal
 from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -17,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .agent.runner import LangGraphAgentRunner, create_langgraph_agent_turn_runner
 from .agent.types import AgentEvent, AgentTurnInput
-from .config import Settings, get_settings
+from .config import Settings, get_settings, selected_provider
 from .identity import IdentityValidationError, decode_principal_token
 from .observability import metrics
 
@@ -25,6 +29,36 @@ router = APIRouter()
 MAX_MESSAGES = 20
 MAX_MESSAGE_CONTENT = 20_000
 MAX_TOTAL_CONTENT = 20_000
+
+
+class _SlidingWindowRateLimiter:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._windows: dict[str, deque[float]] = {}
+
+    def allow(self, key: str, limit: int, *, now: float | None = None) -> bool:
+        current = monotonic() if now is None else now
+        cutoff = current - 60
+        with self._lock:
+            window = self._windows.setdefault(key, deque())
+            while window and window[0] <= cutoff:
+                window.popleft()
+            if len(window) >= limit:
+                return False
+            window.append(current)
+            return True
+
+
+_LOCAL_RATE_LIMITER = _SlidingWindowRateLimiter()
+_LOCAL_ADMISSIONS: WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[int, asyncio.Semaphore]
+] = WeakKeyDictionary()
+
+
+def _local_admission(limit: int) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    admissions = _LOCAL_ADMISSIONS.setdefault(loop, {})
+    return admissions.setdefault(limit, asyncio.Semaphore(limit))
 
 
 class QuestionMessage(BaseModel):
@@ -172,9 +206,10 @@ async def _event_stream(
     provider: str = "hosted",
     timeout_seconds: float | None = None,
 ) -> AsyncIterator[bytes]:
-    _ = request_id or getattr(request.state, "request_id", str(uuid4()))
+    request_id = request_id or getattr(request.state, "request_id", str(uuid4()))
     provider = getattr(request.state, "provider", provider)
     timeout_seconds = getattr(request.state, "timeout_seconds", timeout_seconds)
+    max_inflight = getattr(request.state, "max_inflight", None)
     queue: asyncio.Queue[AgentEvent | _TimeoutMarker | _RunnerFailureMarker | None] = asyncio.Queue()
     cancellation = asyncio.Event()
     next_sequence = 0
@@ -205,6 +240,13 @@ async def _event_stream(
             cancellation.set()
             await queue.put(_TimeoutMarker(turn.run_id))
 
+
+    admission: asyncio.Semaphore | None = None
+    admission_acquired = False
+    if provider == "local" and isinstance(max_inflight, int):
+        admission = _local_admission(max_inflight)
+        await admission.acquire()
+        admission_acquired = True
     runner_task = asyncio.create_task(run())
     watcher_task = asyncio.create_task(_cancel_on_disconnect(request, cancellation))
     timeout_task = asyncio.create_task(timeout_watch())
@@ -236,6 +278,10 @@ async def _event_stream(
                 queue_ms = event.payload.get("queueMs")
                 ttft_ms = event.payload.get("ttftMs")
                 inter_token_latency_ms = event.payload.get("interTokenLatencyMs")
+                kv_cache_usage = event.payload.get("kvCacheUsage")
+                preemptions = event.payload.get("preemptions")
+                oom_signals = event.payload.get("oomSignals")
+                restart_signals = event.payload.get("restartSignals")
                 metrics.observe_usage(
                     provider=provider,
                     prompt_tokens=(
@@ -273,6 +319,27 @@ async def _event_stream(
                         if isinstance(inter_token_latency_ms, (int, float)) and not isinstance(inter_token_latency_ms, bool)
                         else None
                     ),
+                    kv_cache_usage=(
+                        kv_cache_usage
+                        if isinstance(kv_cache_usage, (int, float))
+                        and not isinstance(kv_cache_usage, bool)
+                        else None
+                    ),
+                    preemptions=(
+                        preemptions
+                        if isinstance(preemptions, int) and not isinstance(preemptions, bool)
+                        else None
+                    ),
+                    oom_signals=(
+                        oom_signals
+                        if isinstance(oom_signals, int) and not isinstance(oom_signals, bool)
+                        else None
+                    ),
+                    restart_signals=(
+                        restart_signals
+                        if isinstance(restart_signals, int) and not isinstance(restart_signals, bool)
+                        else None
+                    ),
                 )
                 code = event.payload.get("code")
                 outcome = "completed" if event.event_type == "run.completed" else "timeout" if code == "timeout" else "cancelled" if code == "aborted" else "failed"
@@ -283,6 +350,8 @@ async def _event_stream(
         timeout_task.cancel()
         runner_task.cancel()
         await asyncio.gather(watcher_task, timeout_task, runner_task, return_exceptions=True)
+        if admission_acquired and admission is not None:
+            admission.release()
 
 
 @router.post("/v1/question", tags=["question"])
@@ -295,13 +364,28 @@ async def question(
     request_id = _request_id(request)
     try:
         settings: Settings = get_settings()
-        provider = getattr(settings, "PROVIDER_NAME", "hosted")
+        configured_provider = getattr(settings, "PROVIDER_NAME", "openrouter")
+        provider = selected_provider(settings)
         access_scope = _authenticated_access_scope(request, settings)
         if payload.corpus_revision is not None and payload.corpus_revision != settings.PINECONE_CORPUS_REVISION:
             raise _internal_error(400, "invalid_request", "Invalid request")
         if not access_scope:
             raise _internal_error(401, "unauthorized", "Authenticated access scope is required")
-        runner = create_langgraph_agent_turn_runner(settings=settings)
+        if provider == "local":
+            tenant = str(access_scope.get("tenant", "unknown"))
+            if not _LOCAL_RATE_LIMITER.allow(
+                tenant,
+                getattr(settings, "LOCAL_LLM_RATE_LIMIT_PER_MINUTE", 60),
+            ):
+                metrics.observe_request(provider=provider, outcome="failed", code="rate_limited")
+                raise _internal_error(429, "rate_limited", "Too many requests")
+        runner_settings = settings
+        if provider != configured_provider:
+            model_copy = getattr(settings, "model_copy", None)
+            if not callable(model_copy):
+                raise ValueError("Provider rollback requires validated settings")
+            runner_settings = model_copy(update={"PROVIDER_NAME": provider})
+        runner = create_langgraph_agent_turn_runner(settings=runner_settings)
     except (ValidationError, ValueError, OSError, RuntimeError):
         raise _internal_error(503, "service_unavailable", "Question service unavailable")
     turn = AgentTurnInput(
@@ -314,6 +398,11 @@ async def question(
     request.state.request_id = request_id
     request.state.provider = provider
     request.state.timeout_seconds = timeout_seconds
+    request.state.max_inflight = (
+        getattr(settings, "LOCAL_LLM_MAX_INFLIGHT", 1)
+        if provider == "local"
+        else None
+    )
     return StreamingResponse(
         _event_stream(request, runner, turn),
         media_type="text/event-stream",

@@ -4,7 +4,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from .config import get_settings
+from .config import get_settings, selected_provider
 from .observability import metrics
 from .question import (
     _authorize,
@@ -78,19 +78,31 @@ def readyz() -> JSONResponse:
     """Check the selected provider without exposing endpoint or credential details."""
     try:
         settings = get_settings()
-        if settings.PROVIDER_NAME == "local":
+        provider = selected_provider(settings)
+        if provider == "local":
             check_vllm_readiness(
                 settings.LOCAL_LLM_BASE_URL or "",
                 api_key=settings.LOCAL_LLM_API_KEY,
                 expected_model=QWEN3_VLLM_PROFILE.model_id,
                 timeout=min(float(settings.LOCAL_LLM_TIMEOUT_SECONDS), 5.0),
             )
-        metrics.set_readiness(provider=settings.PROVIDER_NAME, ready=True)
+        metrics.set_readiness(provider=provider, ready=True)
         return JSONResponse(
             status_code=200,
-            content={"status": "ready", "service": "api", "provider": settings.PROVIDER_NAME},
+            content={"status": "ready", "service": "api", "provider": provider},
         )
-    except (VllmReadinessError, OSError, RuntimeError, ValueError, TypeError):
+    except VllmReadinessError as error:
+        metrics.set_readiness(provider="local", ready=False)
+        state = getattr(error, "state", "model_failed")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "loading" if state == "model_loading" else "not_ready",
+                "service": "api",
+                "reason": state,
+            },
+        )
+    except (OSError, RuntimeError, ValueError, TypeError):
         provider = "unknown"
         try:
             provider = get_settings().PROVIDER_NAME
@@ -113,7 +125,7 @@ def internal_readyz(
     if readiness.status_code != 200:
         return readiness
     settings = get_settings()
-    if settings.PROVIDER_NAME != "local":
+    if selected_provider(settings) != "local":
         return JSONResponse(status_code=503, content={"status": "not_ready", "service": "api"})
     return JSONResponse(
         status_code=200,

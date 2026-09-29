@@ -15,9 +15,9 @@ from starlette.requests import Request
 from app import question as question_module
 from app.agent import runner as runner_module
 from app.agent.runner import LangChainModelStages, LangGraphAgentRunner
-from app.agent.types import AgentEvent, AgentTurnInput
-from app.config import Settings
+from app.config import Settings, selected_provider
 from app.question import QuestionRequest
+from app.agent.types import AgentEvent, AgentMessage, AgentTurnInput
 from app.rag.types import Citation, GroundedBundle, GroundingPassage
 
 
@@ -110,6 +110,16 @@ def test_hosted_provider_remains_selectable_for_rollback() -> None:
     assert model.openai_api_key.get_secret_value() == "hosted-key"
 
 
+
+
+def test_server_owned_local_switch_selects_hosted_rollback() -> None:
+    settings = _settings(
+        LOCAL_LLM_ENABLED=False,
+        OPENROUTER_API_KEY="hosted-key",
+        OPENROUTER_LLM_MODEL="hosted/model",
+    )
+
+    assert selected_provider(settings) == "openrouter"
 @pytest.mark.parametrize(
     "endpoint",
     ["http://host:bad/v1", "http://:8000/v1"],
@@ -193,7 +203,6 @@ def _patch_runner(
 
     monkeypatch.setattr(LangGraphAgentRunner, "run_turn", run_turn)
 
-
 @pytest.mark.asyncio
 async def test_question_route_streams_with_local_provider(
     monkeypatch: pytest.MonkeyPatch,
@@ -204,7 +213,6 @@ async def test_question_route_streams_with_local_provider(
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
     monkeypatch.setattr(question_module, "get_settings", lambda: settings)
     _patch_runner(monkeypatch, captured)
-
     response = await question_module.question(
         QuestionRequest.model_validate(
             {"runId": "local-run", "messages": [{"role": "user", "content": "Hi"}]}

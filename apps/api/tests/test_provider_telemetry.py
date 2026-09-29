@@ -21,6 +21,10 @@ class _Runnable:
                     "input_tokens": 12,
                     "output_tokens": 7,
                     "total_tokens": 19,
+                    "kv_cache_usage_ratio": 0.42,
+                    "preemptions": 3,
+                    "oom_signals": 1,
+                    "restart_signals": 2,
                 },
                 invalid_tool_calls=[],
                 tool_calls=[],
@@ -64,6 +68,10 @@ async def test_local_model_stage_exposes_non_sensitive_usage_telemetry() -> None
     assert stages.telemetry["completionTokens"] == 14
     assert stages.telemetry["totalTokens"] == 38
     assert stages.telemetry["generationMs"] >= 0
+    assert stages.telemetry["kvCacheUsage"] == 0.84
+    assert stages.telemetry["preemptions"] == 6
+    assert stages.telemetry["oomSignals"] == 2
+    assert stages.telemetry["restartSignals"] == 4
     assert model.runnable.config == {
         "metadata": {"runId": "telemetry-run-2"},
         "run_name": "pali-agent-telemetry-run-2",

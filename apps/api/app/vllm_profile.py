@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from time import perf_counter
 from types import MappingProxyType
-from typing import Mapping
+from typing import Literal, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -65,6 +66,15 @@ QWEN3_VLLM_PROFILE = VllmProfile(
 class VllmReadinessError(RuntimeError):
     """Raised when the private vLLM endpoint is not ready for the pinned model."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        state: Literal["model_loading", "model_failed"] = "model_failed",
+    ) -> None:
+        super().__init__(message)
+        self.state = state
+
 
 def _validate_base_url(base_url: str) -> str:
     if not isinstance(base_url, str) or not base_url.strip():
@@ -106,9 +116,15 @@ def _get_status(url: str, *, timeout: float) -> None:
     try:
         with urlopen(request, timeout=timeout) as response:
             if response.status != 200:
-                raise VllmReadinessError(f"vLLM readiness returned HTTP {response.status}")
+                raise VllmReadinessError(
+                    f"vLLM readiness returned HTTP {response.status}",
+                    state="model_loading",
+                )
     except HTTPError as error:
-        raise VllmReadinessError(f"vLLM readiness returned HTTP {error.code}") from error
+        raise VllmReadinessError(
+            f"vLLM readiness returned HTTP {error.code}",
+            state="model_loading" if error.code == 503 else "model_failed",
+        ) from error
     except (TimeoutError, URLError, OSError) as error:
         raise VllmReadinessError("vLLM readiness endpoint is unavailable") from error
 
