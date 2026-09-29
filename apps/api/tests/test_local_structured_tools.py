@@ -19,6 +19,11 @@ class EchoArguments(BaseModel):
     value: str
 
 
+
+class OptionalEchoArguments(BaseModel):
+    value: str
+    note: str | None = None
+
 @dataclass
 class StructuredRunnable:
     value: object
@@ -108,9 +113,10 @@ async def test_tool_choice_is_request_level_and_parsed_without_model_execution(
         assert model.tool_kwargs == []
         return
     assert isinstance(call, ToolInvocation)
-    assert call.name == "echo"
-    assert call.arguments == {"value": "hello"}
     assert model.tool_definitions[-1][0]["function"]["strict"] is True
+    assert model.tool_definitions[-1][0]["function"]["parameters"][
+        "additionalProperties"
+    ] is False
     assert model.tool_kwargs[-1]["parallel_tool_calls"] is False
     assert model.tool_kwargs[-1]["strict"] is True
     assert model.tool_kwargs[-1]["tool_choice"] == choice
@@ -132,6 +138,25 @@ async def test_openai_named_tool_choice_is_validated_and_forwarded() -> None:
     assert isinstance(call, ToolInvocation)
     assert model.tool_kwargs[-1]["tool_choice"] == choice
 
+
+
+@pytest.mark.asyncio
+async def test_tool_schema_keeps_optional_values_explicit() -> None:
+    model = LocalStructuredModel(None)
+    stages = LangChainModelStages(
+        model=model,
+        settings=type("Settings", (), {"PROVIDER_NAME": "local"})(),
+    )
+
+    await stages.tool_call(
+        turn(),
+        [{"name": "echo", "args_schema": OptionalEchoArguments}],
+        tool_choice="required",
+    )
+
+    parameters = model.tool_definitions[-1][0]["function"]["parameters"]
+    assert parameters["required"] == ["value"]
+    assert "note" in parameters["properties"]
 
 @pytest.mark.asyncio
 async def test_local_stage_invocations_are_serialized_for_the_pilot() -> None:
@@ -236,6 +261,29 @@ async def test_tool_dispatch_validates_arguments_and_authorization() -> None:
         )
         await denied.dispatch(
             ToolInvocation(call_id="call-2", name="echo", arguments={"value": "hello"}),
+            turn(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_tool_dispatch_rejects_unexpected_properties() -> None:
+    dispatcher = ApplicationToolDispatcher(
+        [
+            {
+                "name": "echo",
+                "args_schema": EchoArguments,
+                "handler": lambda args: args.value,
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="unexpected"):
+        await dispatcher.dispatch(
+            ToolInvocation(
+                callId="call-extra",
+                name="echo",
+                arguments={"value": "hello", "extra": "reject"},
+            ),
             turn(),
         )
 
@@ -360,6 +408,38 @@ async def test_tool_call_rejects_arguments_that_fail_the_registered_schema() -> 
         settings=type("Settings", (), {"PROVIDER_NAME": "local"})(),
     )
     with pytest.raises(ValidationError):
+        await stages.tool_call(
+            turn(),
+            [{"name": "echo", "args_schema": EchoArguments}],
+            tool_choice="required",
+        )
+
+
+@pytest.mark.asyncio
+async def test_tool_call_rejects_unexpected_arguments_before_dispatch() -> None:
+    class ExtraArgumentsModel(LocalStructuredModel):
+        def bind_tools(self, _tools: list[object], **kwargs: object) -> StructuredRunnable:
+            self.tool_kwargs.append(kwargs)
+            return StructuredRunnable(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call-extra",
+                            "name": "echo",
+                            "args": {"value": "hello", "extra": "reject"},
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            )
+
+    stages = LangChainModelStages(
+        model=ExtraArgumentsModel(None),
+        settings=type("Settings", (), {"PROVIDER_NAME": "local"})(),
+    )
+
+    with pytest.raises(ValueError, match="unexpected"):
         await stages.tool_call(
             turn(),
             [{"name": "echo", "args_schema": EchoArguments}],

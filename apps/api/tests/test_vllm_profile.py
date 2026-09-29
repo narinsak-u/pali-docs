@@ -5,6 +5,7 @@ import pytest
 from app.vllm_profile import (
     QWEN3_VLLM_PROFILE,
     VllmReadinessError,
+    check_vllm_structured_contract,
     validate_model_identity,
 )
 
@@ -49,6 +50,57 @@ def test_model_identity_accepts_only_the_expected_served_model() -> None:
     ) == "Qwen/Qwen3-8B"
 
 
+def test_structured_contract_smoke_distinguishes_warmup_from_steady_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        status = 200
+
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self.body
+
+    responses = iter(
+        [
+            Response(
+                b'{"choices":[{"message":{"tool_calls":[{"function":{"name":"retrieve","arguments":"{\\"query\\":\\"dhamma\\"}"}}]}}]}'
+            ),
+            Response(
+                b'{"choices":[{"message":{"tool_calls":[{"function":{"name":"retrieve","arguments":"{\\"query\\":\\"dhamma\\"}"}}]}}]}'
+            ),
+        ]
+    )
+    requests: list[object] = []
+
+    def fake_urlopen(request: object, timeout: float) -> Response:
+        requests.append(request)
+        return next(responses)
+
+    monkeypatch.setattr("app.vllm_profile.urlopen", fake_urlopen)
+
+    warmup_ms, steady_state_ms = check_vllm_structured_contract(
+        "http://vllm.internal:8000/v1",
+        api_key="vllm-key",
+        model="Qwen/Qwen3-8B",
+    )
+
+    assert warmup_ms >= 0
+    assert steady_state_ms >= 0
+    assert len(requests) == 2
+    body = requests[0].data.decode("utf-8")  # type: ignore[union-attr]
+    assert '"tool_choice": {"type": "function", "function": {"name": "retrieve"}}' in body
+    assert '"parallel_tool_calls": false' in body
+    assert '"enable_thinking": false' in body
+
+
 def test_readiness_checks_health_then_exact_model_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -71,6 +123,12 @@ def test_readiness_checks_health_then_exact_model_identity(
             Response(b""),
             Response(b'{"data":[{"id":"Qwen/Qwen3-8B"}]}'),
             Response(b'{"choices":[{"message":{"content":"ok"}}]}'),
+            Response(
+                b'{"choices":[{"message":{"tool_calls":[{"function":{"name":"retrieve","arguments":"{\\"query\\":\\"dhamma\\"}"}}]}}]}'
+            ),
+            Response(
+                b'{"choices":[{"message":{"tool_calls":[{"function":{"name":"retrieve","arguments":"{\\"query\\":\\"dhamma\\"}"}}]}}]}'
+            ),
         ]
     )
     seen: list[object] = []
@@ -90,10 +148,12 @@ def test_readiness_checks_health_then_exact_model_identity(
         )
         == "Qwen/Qwen3-8B"
     )
-    assert len(seen) == 3
+    assert len(seen) == 5
     assert seen[0].full_url == "http://vllm.internal:8000/health"
     assert seen[1].full_url == "http://vllm.internal:8000/v1/models"
     assert seen[2].full_url == "http://vllm.internal:8000/v1/chat/completions"
+    assert seen[3].full_url == "http://vllm.internal:8000/v1/chat/completions"
+    assert seen[4].full_url == "http://vllm.internal:8000/v1/chat/completions"
 
 def test_readiness_cli_rejects_non_pinned_model_override(
     monkeypatch: pytest.MonkeyPatch,

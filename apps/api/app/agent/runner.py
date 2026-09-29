@@ -181,6 +181,22 @@ def _tool_specs(tools: Sequence[Mapping[str, object] | object]) -> list[_ToolSpe
     return specs
 
 
+def _validate_tool_arguments(schema: type[Any], arguments: Mapping[str, object]) -> Any:
+    properties = schema.model_json_schema().get("properties")
+    if isinstance(properties, Mapping):
+        unexpected = set(arguments).difference(properties)
+        if unexpected:
+            names = ", ".join(sorted(str(name) for name in unexpected))
+            raise ValueError(f"tool arguments contain unexpected properties: {names}")
+    return schema.model_validate(arguments)
+
+
+def _strict_tool_schema(schema: type[Any]) -> dict[str, object]:
+    definition = dict(schema.model_json_schema())
+    definition["additionalProperties"] = False
+    return definition
+
+
 class ApplicationToolDispatcher:
     """Validate and execute only tools explicitly registered by the application."""
 
@@ -198,7 +214,7 @@ class ApplicationToolDispatcher:
                 authorized = await authorized
             if not authorized:
                 raise PermissionError(f"tool call is not authorized: {invocation.name}")
-        arguments = spec.args_schema.model_validate(invocation.arguments)
+        arguments = _validate_tool_arguments(spec.args_schema, invocation.arguments)
         if spec.handler is None:
             raise ValueError(f"tool has no application handler: {invocation.name}")
         result = spec.handler(arguments)
@@ -509,7 +525,7 @@ class LangChainModelStages:
                     "function": {
                         "name": spec.name,
                         "description": spec.description,
-                        "parameters": spec.args_schema.model_json_schema(),
+                        "parameters": _strict_tool_schema(spec.args_schema),
                         "strict": True,
                     },
                 }
@@ -528,9 +544,8 @@ class LangChainModelStages:
             tool_choice=tool_choice,
         )
         if invocation is not None:
-            next(
-                spec for spec in specs if spec.name == invocation.name
-            ).args_schema.model_validate(invocation.arguments)
+            spec = next(spec for spec in specs if spec.name == invocation.name)
+            _validate_tool_arguments(spec.args_schema, invocation.arguments)
         return invocation
 
     async def classify(self, input: AgentTurnInput) -> RetrievalDecision:

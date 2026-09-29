@@ -28,6 +28,7 @@ This host must not be an Apple Silicon or CPU-only deployment target. The reposi
 - Structured stages use LangChain function-calling requests with strict schema validation; tool calls are parsed and authorized by the application before execution.
 - Pilot tool calls are serialized (`parallel_tool_calls=false`) and support request-level `auto`, `required`, named, and `none` choices.
 - Tool parsing and structured output are enabled only for the private local provider; the hosted provider remains unchanged as rollback.
+- `apps/api/scripts/check_vllm.py` exercises one plain completion, then two serialized strict retrieval tool calls; the structured smoke helper returns grammar warm-up and steady-state latency separately.
 
 Do not replace these with `latest`, an unpinned Hugging Face branch, a different tokenizer, parser, serving limit, or cache policy without a new compatibility check.
 

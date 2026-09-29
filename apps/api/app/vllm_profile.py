@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from time import perf_counter
 from types import MappingProxyType
 from typing import Mapping
 from urllib.error import HTTPError, URLError
@@ -183,6 +183,140 @@ def _check_non_thinking_completion(
         raise VllmReadinessError("vLLM completion readiness returned no content")
 
 
+def _check_structured_completion(
+    url: str,
+    *,
+    api_key: str,
+    model: str,
+    timeout: float,
+) -> None:
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Use the retrieval tool for the query dhamma.",
+                }
+            ],
+            "temperature": 0,
+            "max_tokens": 64,
+            "stream": False,
+            "parallel_tool_calls": False,
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "retrieve"},
+            },
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "retrieve",
+                        "description": "Retrieve grounded passages.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string", "minLength": 1}},
+                            "required": ["query"],
+                            "additionalProperties": False,
+                        },
+                        "strict": True,
+                    },
+                }
+            ],
+            "chat_template_kwargs": dict(QWEN3_VLLM_PROFILE.chat_template_kwargs),
+        }
+    ).encode("utf-8")
+    request = Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                raise VllmReadinessError(
+                    f"vLLM structured readiness returned HTTP {response.status}"
+                )
+            payload = json.load(response)
+    except HTTPError as error:
+        raise VllmReadinessError(
+            f"vLLM structured readiness returned HTTP {error.code}"
+        ) from error
+    except (TimeoutError, URLError, OSError) as error:
+        raise VllmReadinessError("vLLM structured readiness is unavailable") from error
+    except (TypeError, ValueError) as error:
+        raise VllmReadinessError(
+            "vLLM structured readiness returned invalid JSON"
+        ) from error
+    if not isinstance(payload, dict):
+        raise VllmReadinessError("vLLM structured readiness response is invalid")
+    choices = payload.get("choices")
+    message = choices[0].get("message") if isinstance(choices, list) and choices else None
+    calls = message.get("tool_calls") if isinstance(message, dict) else None
+    call = calls[0] if isinstance(calls, list) and len(calls) == 1 else None
+    function = call.get("function") if isinstance(call, dict) else None
+    arguments = function.get("arguments") if isinstance(function, dict) else None
+    if (
+        not isinstance(function, dict)
+        or function.get("name") != "retrieve"
+        or not isinstance(arguments, str)
+    ):
+        raise VllmReadinessError("vLLM structured readiness returned no valid tool call")
+    try:
+        parsed_arguments = json.loads(arguments)
+    except (TypeError, ValueError) as error:
+        raise VllmReadinessError(
+            "vLLM structured readiness returned invalid tool arguments"
+        ) from error
+    if (
+        not isinstance(parsed_arguments, dict)
+        or set(parsed_arguments) != {"query"}
+        or not isinstance(parsed_arguments["query"], str)
+        or not parsed_arguments["query"].strip()
+    ):
+        raise VllmReadinessError("vLLM structured readiness returned invalid tool arguments")
+
+
+def check_vllm_structured_contract(
+    base_url: str,
+    *,
+    api_key: str,
+    model: str = QWEN3_VLLM_PROFILE.model_id,
+    timeout: float = 2,
+) -> tuple[float, float]:
+    """Exercise serialized strict tool calls and return warm-up/steady-state latency."""
+    normalized_url = _validate_base_url(base_url)
+    if model != QWEN3_VLLM_PROFILE.model_id:
+        raise VllmReadinessError("vLLM structured readiness requires the pinned model")
+    completion_url = (
+        f"{normalized_url}/chat/completions"
+        if normalized_url.endswith("/v1")
+        else f"{normalized_url}/v1/chat/completions"
+    )
+    started = perf_counter()
+    _check_structured_completion(
+        completion_url,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+    )
+    warmup_ms = (perf_counter() - started) * 1000
+    started = perf_counter()
+    _check_structured_completion(
+        completion_url,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+    )
+    steady_state_ms = (perf_counter() - started) * 1000
+    return round(warmup_ms, 3), round(steady_state_ms, 3)
+
+
 def check_vllm_readiness(
     base_url: str,
     *,
@@ -190,7 +324,7 @@ def check_vllm_readiness(
     expected_model: str = QWEN3_VLLM_PROFILE.model_id,
     timeout: float = 2,
 ) -> str:
-    """Check health, exact model identity, and a non-thinking completion."""
+    """Check health, exact model identity, plain completion, and structured tool calls."""
     normalized_url = _validate_base_url(base_url)
     if not isinstance(api_key, str) or not api_key.strip():
         raise VllmReadinessError("vLLM API key is required")
@@ -213,6 +347,12 @@ def check_vllm_readiness(
     )
     _check_non_thinking_completion(
         completion_url,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+    )
+    check_vllm_structured_contract(
+        normalized_url,
         api_key=api_key,
         model=model,
         timeout=timeout,

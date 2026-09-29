@@ -51,6 +51,12 @@ def test_readiness_requires_a_bounded_non_thinking_completion(monkeypatch) -> No
             Response(b""),
             Response(b'{"data":[{"id":"Qwen/Qwen3-8B"}]}'),
             Response(b'{"choices":[{"message":{"content":"ok"}}]}'),
+            Response(
+                b'{"choices":[{"message":{"tool_calls":[{"function":{"name":"retrieve","arguments":"{\\"query\\":\\"dhamma\\"}"}}]}}]}'
+            ),
+            Response(
+                b'{"choices":[{"message":{"tool_calls":[{"function":{"name":"retrieve","arguments":"{\\"query\\":\\"dhamma\\"}"}}]}}]}'
+            ),
         ]
     )
     requests = []
@@ -89,6 +95,12 @@ def test_readiness_completion_check_explicitly_disables_streaming(monkeypatch) -
             Response(b""),
             Response(b'{"data":[{"id":"Qwen/Qwen3-8B"}]}'),
             Response(b'{"choices":[{"message":{"content":"ok"}}]}'),
+            Response(
+                b'{"choices":[{"message":{"tool_calls":[{"function":{"name":"retrieve","arguments":"{\\"query\\":\\"dhamma\\"}"}}]}}]}'
+            ),
+            Response(
+                b'{"choices":[{"message":{"tool_calls":[{"function":{"name":"retrieve","arguments":"{\\"query\\":\\"dhamma\\"}"}}]}}]}'
+            ),
         ]
     )
     requests = []
