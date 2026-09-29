@@ -7,7 +7,10 @@ import {
   createStructuredTraceSink,
 } from "@/lib/agent/structured-trace-sink";
 import type { AgentTurnRunner } from "@/lib/agent/types";
-import { getAuthenticatedAccessScope } from "@/lib/config/canary-context";
+import {
+  createPrincipalToken,
+  getAuthenticatedAccessScope,
+} from "@/lib/config/canary-context";
 import { getModelConfig } from "@/lib/config/model";
 import { getRagConfig } from "@/lib/config/rag";
 import { selectQuestionBackend } from "@/lib/config/question-backend";
@@ -101,10 +104,15 @@ export async function POST(req: Request): Promise<Response> {
 
   const runId = globalThis.crypto.randomUUID();
   const accessScope = getAuthenticatedAccessScope(req);
+  const identitySecret = process.env.FASTAPI_IDENTITY_SECRET?.trim();
   const backend = selectQuestionBackend(req, runId);
   const configuredLangGraph =
     backend === "langgraph" &&
-    Boolean(process.env.FASTAPI_BASE_URL?.trim() && process.env.FASTAPI_INTERNAL_TOKEN?.trim());
+    Boolean(
+      process.env.FASTAPI_BASE_URL?.trim() &&
+        process.env.FASTAPI_INTERNAL_TOKEN?.trim() &&
+        identitySecret,
+    );
   if (accessScope === undefined && configuredLangGraph) {
     return new Response(JSON.stringify({ error: "authenticated access scope is required" }), {
       status: 401,
@@ -115,7 +123,7 @@ export async function POST(req: Request): Promise<Response> {
   if (backend === "langgraph") {
     const baseUrl = process.env.FASTAPI_BASE_URL?.trim().replace(/\/+$/, "");
     const internalToken = process.env.FASTAPI_INTERNAL_TOKEN?.trim();
-    if (!baseUrl || !internalToken) {
+    if (!baseUrl || !internalToken || !identitySecret || !accessScope) {
       console.error("LangGraph question fallback:", {
         runId,
         reason: "missing_configuration",
@@ -133,9 +141,7 @@ export async function POST(req: Request): Promise<Response> {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${internalToken}`,
-          ...(accessScope === undefined
-            ? {}
-            : { "X-Access-Scope": JSON.stringify(accessScope) }),
+          "X-Principal": createPrincipalToken(accessScope, identitySecret),
         },
         body: JSON.stringify({
           runId,

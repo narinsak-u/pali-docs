@@ -76,9 +76,25 @@ export type AgentEvent =
       cost?: number;
       promptTokens?: number;
       completionTokens?: number;
+      totalTokens?: number;
+      generationMs?: number;
       queueMs?: number;
+      ttftMs?: number;
+      interTokenLatencyMs?: number;
     }
-  | { type: "run.failed"; runId: string; code: string }
+  | {
+      type: "run.failed";
+      runId: string;
+      code: string;
+      cost?: number;
+      promptTokens?: number;
+      completionTokens?: number;
+      totalTokens?: number;
+      generationMs?: number;
+      queueMs?: number;
+      ttftMs?: number;
+      interTokenLatencyMs?: number;
+    }
   | {
       type: "tool.started" | "tool.completed" | "tool.failed";
       runId: string;
@@ -96,7 +112,12 @@ export interface AgentTurnRunner {
   observedServingMetadata?: {
     model: string;
     servingRevision: string;
+    tokenizerRevision?: string;
     imageDigest?: string;
+    parser?: string;
+    chatTemplate?: string;
+    precision?: string;
+    servingLimits?: Record<string, number>;
     tokenizer?: string;
   };
   runTurn(

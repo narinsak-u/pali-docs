@@ -24,6 +24,7 @@ from .types import (
     RetrievalDecision,
     Suggestions,
     TerminalResult,
+    ToolExecutionResult,
 )
 
 MAX_RETRIEVAL_ATTEMPTS = 2
@@ -63,6 +64,7 @@ class AgentGraphState(TypedDict, total=False):
     answer: str
     citations: list[object]
     suggestions: list[str]
+    tool_results: list[ToolExecutionResult]
     citation_repair_count: int
     citation_valid: bool
     result: AgentTurnResult
@@ -263,17 +265,27 @@ async def tool_node(state: AgentGraphState, config: object) -> dict[str, object]
         _event(run_id, "tool.started", toolId=call_id),
     )
     try:
-        await _call(dispatcher.dispatch, invocation, turn, config=config)
+        result = await _call(dispatcher.dispatch, invocation, turn, config=config)
     except Exception:
         await _emit_immediate(
             config,
             _event(run_id, "tool.failed", toolId=call_id, code="tool_error"),
         )
         raise
+    execution = ToolExecutionResult(
+        callId=call_id,
+        name=str(invocation.name),
+        result=result,
+    )
+    updated_turn = turn.model_copy(
+        update={"tool_results": [*turn.tool_results, execution]}
+    )
     return {
+        "input": updated_turn,
+        "tool_results": [execution],
         "events": [
             _event(run_id, "tool.completed", toolId=call_id)
-        ]
+        ],
     }
 async def _classify(
     state: AgentGraphState, config: object
@@ -630,6 +642,30 @@ async def suggestions_node(state: AgentGraphState, config: object) -> dict[str, 
     return {"suggestions": values, "events": events}
 
 
+def _telemetry_payload(config: object) -> dict[str, object]:
+    stages = _configurable(config).get("stages")
+    telemetry = getattr(stages, "telemetry", None)
+    if not isinstance(telemetry, Mapping):
+        return {}
+    allowed = {
+        "promptTokens",
+        "completionTokens",
+        "totalTokens",
+        "generationMs",
+        "queueMs",
+        "ttftMs",
+        "interTokenLatencyMs",
+    }
+    return {
+        key: value
+        for key, value in telemetry.items()
+        if key in allowed
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value >= 0
+    }
+
+
 async def complete_node(state: AgentGraphState, config: object) -> dict[str, object]:
     check_cancelled(config)
     result = state.get("result")
@@ -652,6 +688,7 @@ async def complete_node(state: AgentGraphState, config: object) -> dict[str, obj
     )
     if isinstance(result, TerminalResult) and result.code:
         payload["code"] = result.code
+    payload.update(_telemetry_payload(config))
     return {
         "result": result,
         "events": [_event(_run_id(state), event_type, **payload)],

@@ -70,6 +70,7 @@ def test_readiness_checks_health_then_exact_model_identity(
         [
             Response(b""),
             Response(b'{"data":[{"id":"Qwen/Qwen3-8B"}]}'),
+            Response(b'{"choices":[{"message":{"content":"ok"}}]}'),
         ]
     )
     seen: list[object] = []
@@ -89,9 +90,10 @@ def test_readiness_checks_health_then_exact_model_identity(
         )
         == "Qwen/Qwen3-8B"
     )
-    assert len(seen) == 2
+    assert len(seen) == 3
     assert seen[0].full_url == "http://vllm.internal:8000/health"
     assert seen[1].full_url == "http://vllm.internal:8000/v1/models"
+    assert seen[2].full_url == "http://vllm.internal:8000/v1/chat/completions"
 
 def test_readiness_cli_rejects_non_pinned_model_override(
     monkeypatch: pytest.MonkeyPatch,

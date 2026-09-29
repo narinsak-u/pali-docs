@@ -71,8 +71,9 @@ The stream carries status and bounded summaries for progress, not a token-by-tok
 
 - `parseQuestionRequestBody()` reads the request as bytes and rejects bodies larger than 256 KiB, including chunked bodies that exceed the limit without a usable `Content-Length`.
 - `parseQuestionRequest()` accepts 1–20 user/assistant messages, at most 20 parts per message, at most 4,000 characters per text part, and at most 20,000 text characters in total. Non-text parts are discarded; messages with no retained text parts are removed. The final retained message must be a user message with nonblank text.
-- `getModelConfig()` and `getRagConfig()` run before the AI SDK stream is created. LangGraph requests additionally require `FASTAPI_BASE_URL` and `FASTAPI_INTERNAL_TOKEN`.
-- The route selects a backend only from server configuration and a server-created request ID. Client input cannot select a runner or widen access scope.
+- `getModelConfig()` and `getRagConfig()` run before the AI SDK stream is created. LangGraph requests additionally require `FASTAPI_BASE_URL`, `FASTAPI_INTERNAL_TOKEN`, and `FASTAPI_IDENTITY_SECRET`.
+- The BFF signs a short-lived `v1` Principal token from server-authenticated tenant context. FastAPI verifies the signature, issuer, audience, timestamps, and typed AccessScope claims; `X-Access-Scope` is ignored. `INTERNAL_PRINCIPAL_SECRET` is API-side only and must match `FASTAPI_IDENTITY_SECRET`.
+- The route selects a backend only from server configuration and a server-created request ID. Client input cannot select a runner or widen AccessScope.
 - Invalid request bodies return HTTP 400 (`invalid_request`). Setup failures return HTTP 429 for quota errors or HTTP 500 (`internal_error`) without exposing configuration details. Before backend SSE bytes are consumed, backend failures fall back to AI SDK; after stream creation, failures are emitted through the existing stream error path.
 
 ### Runner
@@ -205,7 +206,9 @@ Run the paired AI SDK/LangGraph comparison through the root command:
 just compare-rag
 ```
 
-This command fails closed before runner creation or network calls until `data/rag-eval-cases.json` has an authoritative corpus revision, an outcome-accuracy baseline, and the reviewed evaluation cases required by the readiness gate. The checked-in manifest is intentionally incomplete, so a nonzero result from `just compare-rag` is expected at present. Do not fabricate corpus revisions, baselines, source IDs, or reviewed cases to make the comparison pass.
+The comparison now runs only through the attested provider-evaluation path. It requires `RAG_REVIEWED_CASES_PATH`, `RAG_PRODUCTION_BASELINE_PATH`, `RAG_PROMOTION_ATTESTATION_SECRET`, `RAG_BASELINE_ATTESTATION_SECRET`, `HOSTED_SERVING_REVISION`, and the FastAPI identity variables. The reviewed-case artifact must carry the authoritative immutable corpus revision and source mappings; the ProductionBaseline artifact must be signed from issue 42's reviewed baseline. Missing, stale, forged, or mismatched artifacts fail closed before provider calls.
+
+Each case runs against both providers with the same normalized messages, AccessScope, and corpus revision. The result records run ID, model/serving identity, tokenizer/parser/chat-template/precision/limit identity when supplied, source/citation evidence, tool lifecycle telemetry, token usage, cost, and latency. Promotion additionally requires a runtime-authenticated local identity and an explicit hosted rollback-ready signal. Do not promote from the legacy JSONL comparison or deterministic tests alone.
 
 
 ## Evaluation gate
@@ -245,6 +248,8 @@ The route, AI SDK runner, retriever, event adapter, UI data-part handling, and f
 | `components/ai/ai-message.tsx` | Stream-part validation and answer/process/citation/outcome rendering. |
 | `scripts/evaluate-rag.ts` | Fail-closed production runner/retriever evaluation CLI. |
 | `lib/rag/evaluation.ts` | Manifest readiness checks, aggregate metrics, and gate violations. |
+| `lib/rag/provider-evaluation.ts` | Attested paired provider traces, runtime serving identity, telemetry, and fail-closed promotion decisions. |
+| `scripts/compare-rag.ts` | Executes only the attested hosted/local comparison from authoritative artifacts. |
 | `data/rag-eval-cases.json` | Evaluation manifest; currently incomplete pending external corpus/source data. |
 | `components/ai/citation-list.tsx` | Citation rendering and safe `/docs/...` link derivation. |
 | `components/ai/chat-status.tsx` | Visible thinking/searching/answering phase indicator. |

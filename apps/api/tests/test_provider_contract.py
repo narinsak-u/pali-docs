@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -18,6 +21,24 @@ from app.question import QuestionRequest
 from app.rag.types import Citation, GroundedBundle, GroundingPassage
 
 
+def _principal_header(tenant: str = "tenant-test") -> tuple[bytes, bytes]:
+    now = int(datetime.now(timezone.utc).timestamp())
+    payload = {
+        "iss": "pali-docs-bff",
+        "aud": "pali-docs-api",
+        "sub": "test-principal",
+        "tenantId": tenant,
+        "iat": now - 1,
+        "exp": now + 60,
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).rstrip(b"=").decode()
+    body = f"v1.{encoded}"
+    signature = hmac.new(b"identity-secret", body.encode(), hashlib.sha256).digest()
+    return b"x-principal", f"{body}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}".encode()
+
+
 def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "PINECONE_API_KEY": "pinecone-key",
@@ -29,6 +50,7 @@ def _settings(**overrides: object) -> Settings:
         "LOCAL_LLM_MODEL": "Qwen/Qwen3-8B",
         "LOCAL_LLM_TIMEOUT_SECONDS": 45,
         "LOCAL_LLM_MAX_OUTPUT_TOKENS": 768,
+        "INTERNAL_PRINCIPAL_SECRET": "identity-secret",
     }
     values.update(overrides)
     return Settings(**values)
@@ -119,7 +141,7 @@ def test_local_model_seam_rejects_values_above_safety_limits(
 
 def _route_request() -> Request:
     return Request(
-        {"type": "http", "method": "POST", "path": "/v1/question", "headers": [(b"x-access-scope", b'{"tenantId":"tenant-test"}')]}
+        {"type": "http", "method": "POST", "path": "/v1/question", "headers": [_principal_header()]}
     )
 
 
@@ -210,6 +232,7 @@ async def test_question_route_keeps_hosted_provider_as_rollback(
         PROVIDER_NAME="openrouter",
         OPENROUTER_API_KEY="hosted-key",
         OPENROUTER_LLM_MODEL="hosted/model",
+        INTERNAL_PRINCIPAL_SECRET="identity-secret",
     )
     captured: dict[str, object] = {}
 
@@ -243,6 +266,7 @@ async def test_question_route_streams_runner_error_for_invalid_local_limits(
         LOCAL_LLM_MODEL="Qwen/Qwen3-8B",
         LOCAL_LLM_TIMEOUT_SECONDS=301,
         LOCAL_LLM_MAX_OUTPUT_TOKENS=768,
+        INTERNAL_PRINCIPAL_SECRET="identity-secret",
     )
     captured: dict[str, object] = {}
 
@@ -372,7 +396,7 @@ async def test_grounded_question_route_runs_local_provider_end_to_end(
                 "type": "http",
                 "method": "POST",
                 "path": "/v1/question",
-                "headers": [(b"x-access-scope", b'{"tenantId":"tenant-test"}')],
+                "headers": [_principal_header()],
                 "receive": receive,
             }
         ),

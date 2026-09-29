@@ -33,15 +33,31 @@ class AgentMessage(BaseModel):
     content: str = Field(min_length=1)
 
 
+class ToolExecutionResult(BaseModel):
+    """Validated application-tool output retained for later graph stages."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    call_id: str = Field(min_length=1, max_length=200, alias="callId")
+    name: str = Field(min_length=1)
+    result: object
+
+
 class AgentTurnInput(BaseModel):
     model_config = ConfigDict(
         extra="forbid", frozen=True, populate_by_name=True
     )
 
-    run_id: str = Field(min_length=1, alias="runId")
+    run_id: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+        alias="runId",
+    )
     thread_id: str | None = Field(default=None, min_length=1, alias="threadId")
     messages: list[AgentMessage] = Field(min_length=1)
     access_scope: dict[str, object] | None = None
+    tool_results: list[ToolExecutionResult] = Field(default_factory=list)
     tool_choice: ToolChoice = Field(default="none", alias="toolChoice")
 
 class RetrievalDecision(BaseModel):

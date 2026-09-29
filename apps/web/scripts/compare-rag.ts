@@ -4,6 +4,7 @@ import { mkdir, open, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createAiSdkAgentTurnRunner, type Retriever } from "@/lib/agent/ai-sdk-runner";
+import { createPrincipalToken } from "@/lib/config/canary-context";
 import type {
   AgentEvent,
   AgentEventSink,
@@ -25,9 +26,18 @@ import {
   type RagEvaluationRecord,
   type ReadyRagEvaluationManifest,
 } from "@/lib/rag/evaluation";
-import type { Citation } from "@/lib/rag/types";
+import { z } from "zod";
 import type { SafeQuestionRequest } from "@/lib/schemas/question-request";
-import { runEvaluationCase } from "@/scripts/evaluate-rag";
+import {
+  assertReviewedCasesArtifactReady,
+  compareProviderEvaluations,
+  decidePromotion,
+  parseProductionBaselineArtifact,
+  type PairedEvaluation,
+  runPairedEvaluationCase,
+  type ServingMetadata,
+} from "@/lib/rag/provider-evaluation";
+import type { Citation } from "@/lib/rag/types";
 
 export interface ComparisonRecord {
   caseId: string;
@@ -183,7 +193,65 @@ type FastApiRunner = AgentTurnRunner & {
 };
 
 type ObservedServingMetadata = NonNullable<AgentTurnRunner["observedServingMetadata"]>;
+const fastApiReadyIdentitySchema = z
+  .object({
+    status: z.literal("ready"),
+    service: z.literal("api"),
+    model: z.string().trim().min(1),
+    servingRevision: z.string().trim().min(1),
+    imageDigest: z.string().trim().min(1),
+    tokenizer: z.string().trim().min(1),
+    tokenizerRevision: z.string().trim().min(1),
+    parser: z.string().trim().min(1),
+    chatTemplate: z.string().trim().min(1),
+    precision: z.string().trim().min(1),
+    servingLimits: z
+      .object({
+        maxModelLen: z.number().finite().nonnegative(),
+        maxNumSeqs: z.number().finite().nonnegative(),
+        maxNumBatchedTokens: z.number().finite().nonnegative(),
+        gpuMemoryUtilization: z.number().finite().nonnegative(),
+        maxOutputTokens: z.number().finite().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict();
 
+async function fetchFastApiServingMetadata(
+  baseUrl: string,
+  internalToken: string,
+  fetchImpl: typeof fetch,
+  signal: AbortSignal,
+): Promise<ObservedServingMetadata> {
+  const response = await fetchImpl(`${baseUrl}/internal/readyz`, {
+    headers: { Authorization: `Bearer ${internalToken}` },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`FastAPI readiness failed with status ${response.status}`);
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error("FastAPI readiness response was not JSON");
+  }
+  const identity = fastApiReadyIdentitySchema.safeParse(payload);
+  if (!identity.success) {
+    throw new Error("FastAPI readiness identity is incomplete");
+  }
+  return {
+    model: identity.data.model,
+    servingRevision: identity.data.servingRevision,
+    imageDigest: identity.data.imageDigest,
+    tokenizer: identity.data.tokenizer,
+    tokenizerRevision: identity.data.tokenizerRevision,
+    parser: identity.data.parser,
+    chatTemplate: identity.data.chatTemplate,
+    precision: identity.data.precision,
+    servingLimits: identity.data.servingLimits,
+  };
+}
 function messageContent(message: SafeQuestionRequest["messages"][number]): string {
   return message.parts.map(({ text }) => text).join("");
 }
@@ -191,16 +259,18 @@ function messageContent(message: SafeQuestionRequest["messages"][number]): strin
 export function createFastApiRunner(options: {
   baseUrl: string;
   internalToken: string;
+  identitySecret: string;
   corpusRevision: string;
   fetchImpl?: typeof fetch;
 }): FastApiRunner {
   const baseUrl = options.baseUrl.trim().replace(/\/+$/, "");
   const internalToken = options.internalToken.trim();
+  const identitySecret = options.identitySecret.trim();
   const corpusRevision = options.corpusRevision.trim();
   if (!baseUrl) throw new Error("FastAPI base URL is required");
   if (!internalToken) throw new Error("FastAPI internal token is required");
+  if (!identitySecret) throw new Error("FastAPI identity secret is required");
   if (!corpusRevision) throw new Error("FastAPI corpus revision is required");
-
   let retrievedSourceIds: string[] = [];
   let observedCorpusRevision: string | undefined;
   let observedServingMetadata: ObservedServingMetadata | undefined;
@@ -224,46 +294,23 @@ export function createFastApiRunner(options: {
       observedServingMetadata = undefined;
       const requestSignal = signal ?? new AbortController().signal;
       const fetchImpl = options.fetchImpl ?? fetch;
-      const readyResponse = await fetchImpl(`${baseUrl}/internal/readyz`, {
-        headers: { Authorization: `Bearer ${internalToken}` },
-        signal: requestSignal,
-      });
-      if (!readyResponse.ok) throw new Error(`FastAPI readiness failed with status ${readyResponse.status}`);
-      let readyPayload: unknown;
-      try {
-        readyPayload = await readyResponse.json();
-      } catch {
-        throw new Error("FastAPI readiness response was not JSON");
-      }
-      if (readyPayload === null || typeof readyPayload !== "object") {
-        throw new Error("FastAPI readiness identity is invalid");
-      }
-      const identity = readyPayload as Record<string, unknown>;
-      if (
-        typeof identity.model !== "string" || !identity.model.trim() ||
-        typeof identity.servingRevision !== "string" || !identity.servingRevision.trim()
-      ) {
-        throw new Error("FastAPI readiness identity is incomplete");
-      }
-      observedServingMetadata = {
-        model: identity.model.trim(),
-        servingRevision: identity.servingRevision.trim(),
-        ...(typeof identity.imageDigest === "string" && identity.imageDigest.trim()
-          ? { imageDigest: identity.imageDigest.trim() }
-          : {}),
-        ...(typeof identity.tokenizer === "string" && identity.tokenizer.trim()
-          ? { tokenizer: identity.tokenizer.trim() }
-          : {}),
-      };
+      observedServingMetadata = await fetchFastApiServingMetadata(
+        baseUrl,
+        internalToken,
+        fetchImpl,
+        requestSignal,
+      );
 
+      const principal =
+        input.accessScope === undefined
+          ? undefined
+          : createPrincipalToken(input.accessScope, identitySecret);
       const response = await fetchImpl(`${baseUrl}/v1/question`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${internalToken}`,
-          ...(input.accessScope === undefined
-            ? {}
-            : { "X-Access-Scope": JSON.stringify(input.accessScope) }),
+          ...(principal === undefined ? {} : { "X-Principal": principal }),
         },
         body: JSON.stringify({
           runId: input.runId,
@@ -356,6 +403,7 @@ function configuredModelId(): string {
 
 function createObservedAiSdkRunner(
   onRetrieved: (sourceIds: readonly string[]) => void,
+  observedServingMetadata?: ServingMetadata,
 ): AgentTurnRunner {
   const observedRetriever: Retriever = {
     async retrieve(request, signal) {
@@ -366,37 +414,98 @@ function createObservedAiSdkRunner(
       return bundle;
     },
   };
-  return createAiSdkAgentTurnRunner({ retriever: observedRetriever });
+  const runner = createAiSdkAgentTurnRunner({ retriever: observedRetriever });
+  return observedServingMetadata === undefined
+    ? runner
+    : { ...runner, observedServingMetadata };
 }
 
 export async function main(): Promise<void> {
   const projectRoot = process.cwd();
-  const manifestPath = resolve(projectRoot, "data/rag-eval-cases.json");
-  const manifest = assertComparisonReady(
-    JSON.parse(await readFile(manifestPath, "utf8")),
-    process.env.PINECONE_CORPUS_REVISION,
+  const configuredRevision = process.env.PINECONE_CORPUS_REVISION?.trim();
+  const reviewedCasesPath = process.env.RAG_REVIEWED_CASES_PATH?.trim();
+  const baselinePath = process.env.RAG_PRODUCTION_BASELINE_PATH?.trim();
+  if (!configuredRevision || !reviewedCasesPath || !baselinePath) {
+    throw new Error(
+      "RAG comparison requires PINECONE_CORPUS_REVISION, RAG_REVIEWED_CASES_PATH, and RAG_PRODUCTION_BASELINE_PATH",
+    );
+  }
+  const reviewedCases = assertReviewedCasesArtifactReady(
+    JSON.parse(await readFile(resolve(projectRoot, reviewedCasesPath), "utf8")),
   );
+  const productionBaseline = parseProductionBaselineArtifact(
+    JSON.parse(await readFile(resolve(projectRoot, baselinePath), "utf8")),
+  );
+  if (
+    configuredRevision !== reviewedCases.corpusRevision ||
+    configuredRevision !== productionBaseline.corpusRevision
+  ) {
+    throw new Error("RAG comparison corpus revision does not match authoritative artifacts");
+  }
+
   const baseUrl = process.env.FASTAPI_BASE_URL?.trim();
   const internalToken = process.env.FASTAPI_INTERNAL_TOKEN?.trim();
-  if (!baseUrl || !internalToken) {
+  const identitySecret = process.env.FASTAPI_IDENTITY_SECRET?.trim();
+  const hostedServingRevision = process.env.HOSTED_SERVING_REVISION?.trim();
+  if (!baseUrl || !internalToken || !identitySecret || !hostedServingRevision) {
     throw new Error(
-      "RAG comparison requires FASTAPI_BASE_URL and FASTAPI_INTERNAL_TOKEN",
+      "RAG comparison requires FASTAPI_BASE_URL, FASTAPI_INTERNAL_TOKEN, FASTAPI_IDENTITY_SECRET, and HOSTED_SERVING_REVISION",
+    );
+  }
+  if (
+    !process.env.RAG_PROMOTION_ATTESTATION_SECRET?.trim() ||
+    !process.env.RAG_BASELINE_ATTESTATION_SECRET?.trim()
+  ) {
+    throw new Error(
+      "RAG comparison requires RAG_PROMOTION_ATTESTATION_SECRET and RAG_BASELINE_ATTESTATION_SECRET",
     );
   }
 
-  const modelId = configuredModelId();
-  let aiSdkRetrievedSourceIds: string[] = [];
-  const aiSdkRunner = createObservedAiSdkRunner((sourceIds) => {
-    for (const sourceId of sourceIds) {
-      if (!aiSdkRetrievedSourceIds.includes(sourceId)) {
-        aiSdkRetrievedSourceIds.push(sourceId);
-      }
-    }
-  });
-  const langGraphRunner = createFastApiRunner({
+  const localRunner = createFastApiRunner({
     baseUrl,
     internalToken,
-    corpusRevision: manifest.corpusRevision,
+    identitySecret,
+    corpusRevision: configuredRevision,
+  });
+  const localMetadata = await fetchFastApiServingMetadata(
+    baseUrl,
+    internalToken,
+    fetch,
+    new AbortController().signal,
+  );
+  const hostedMetadata: ServingMetadata = {
+    model: configuredModelId(),
+    servingRevision: hostedServingRevision,
+    ...(process.env.HOSTED_IMAGE_DIGEST?.trim()
+      ? { imageDigest: process.env.HOSTED_IMAGE_DIGEST.trim() }
+      : {}),
+    ...(process.env.HOSTED_TOKENIZER?.trim()
+      ? { tokenizer: process.env.HOSTED_TOKENIZER.trim() }
+      : {}),
+  };
+  const hostedRunner = createObservedAiSdkRunner(() => {}, hostedMetadata);
+  const paired: PairedEvaluation[] = [];
+  for (const evaluationCase of reviewedCases.cases) {
+    paired.push(
+      await runPairedEvaluationCase({
+        evaluationCase,
+        hosted: hostedRunner,
+        local: localRunner,
+        hostedMetadata,
+        localMetadata,
+        corpusRevision: configuredRevision,
+      }),
+    );
+  }
+  const comparison = compareProviderEvaluations(
+    paired,
+    productionBaseline.thresholds,
+  );
+  const decision = decidePromotion({
+    comparison,
+    reviewedCases,
+    productionBaseline,
+    rollbackReady: process.env.RAG_HOSTED_ROLLBACK_READY === "true",
   });
   const timestamp = new Date().toISOString().replaceAll(":", "-");
   const outputDirectory = resolve(
@@ -404,100 +513,28 @@ export async function main(): Promise<void> {
     process.env.RAG_COMPARE_OUTPUT_DIR ?? "results/rag-comparison",
   );
   await mkdir(outputDirectory, { recursive: true });
-  const resultFile = resolve(outputDirectory, `${timestamp}.jsonl`);
+  const resultFile = resolve(outputDirectory, `${timestamp}.json`);
   const file = await open(resultFile, "wx");
-  const comparisons: ComparisonRecord[] = [];
-
-  const baselineRetrievalConfig =
-    process.env.RAG_BASELINE_RETRIEVAL_CONFIG?.trim() || "dense-baseline";
-  const candidateRetrievalConfig =
-    process.env.RAG_CANDIDATE_RETRIEVAL_CONFIG?.trim() || "retrieval-quality";
-
   try {
-    for (const evaluationCase of manifest.cases) {
-      aiSdkRetrievedSourceIds = [];
-      const aiSdk = await runEvaluationCase({
-        evaluationCase,
-        runner: aiSdkRunner,
-        runnerName: "ai-sdk",
-        retrievalConfig: baselineRetrievalConfig,
-        corpusRevision: manifest.corpusRevision,
-        modelId,
-        retrievedSourceIds: () => [...aiSdkRetrievedSourceIds],
-      });
-      const langGraph = await runEvaluationCase({
-        evaluationCase,
-        runner: langGraphRunner,
-        runnerName: "langgraph",
-        retrievalConfig: candidateRetrievalConfig,
-        corpusRevision: manifest.corpusRevision,
-        modelId: "langgraph",
-        retrievedSourceIds: () => langGraphRunner.getRetrievedSourceIds(),
-      });
-      const comparison = compareRecords(aiSdk, langGraph);
-      comparisons.push(comparison);
-      await file.write(`${JSON.stringify(comparison)}\n`);
-    }
+    await file.write(
+      JSON.stringify(
+        {
+          schemaVersion: "v1",
+          timestamp,
+          corpusRevision: configuredRevision,
+          paired,
+          comparison,
+          decision,
+        },
+        null,
+        2,
+      ),
+    );
   } finally {
     await file.close();
   }
-
-  const aiSdkRecords = comparisons.map(({ aiSdk }) => aiSdk);
-  const langGraphRecords = comparisons.map(({ langGraph }) => langGraph);
-  const aiSdkAggregate = aggregateEvaluation(aiSdkRecords);
-  const langGraphAggregate = aggregateEvaluation(langGraphRecords);
-  const pairedComparison = createComparisonSummary(
-    {
-      runner: "ai-sdk",
-      retrievalConfig: baselineRetrievalConfig,
-      aggregate: aiSdkAggregate,
-    },
-    {
-      runner: "langgraph",
-      retrievalConfig: candidateRetrievalConfig,
-      aggregate: langGraphAggregate,
-    },
-  );
-  const violations = {
-    "ai-sdk": evaluateGates(
-      aiSdkRecords,
-      aiSdkAggregate,
-      manifest.baseline,
-      manifest.corpusRevision,
-    ),
-    langgraph: evaluateGates(
-      langGraphRecords,
-      langGraphAggregate,
-      manifest.baseline,
-      manifest.corpusRevision,
-    ),
-  };
-
-  console.log(
-    JSON.stringify(
-      {
-        timestamp,
-        corpusRevision: manifest.corpusRevision,
-        resultFile,
-        aggregates: {
-          "ai-sdk": aiSdkAggregate,
-          langgraph: langGraphAggregate,
-        },
-        retrievalConfigurations: {
-          [baselineRetrievalConfig]: aiSdkAggregate,
-          [candidateRetrievalConfig]: langGraphAggregate,
-        },
-        aggregateDeltas: pairedComparison.deltas,
-        pairedComparison,
-        violations,
-      },
-      null,
-      2,
-    ),
-  );
-  if (violations["ai-sdk"].length > 0 || violations.langgraph.length > 0) {
-    process.exitCode = 1;
-  }
+  console.log(JSON.stringify({ resultFile, comparison, decision }, null, 2));
+  if (!decision.promote) process.exitCode = 1;
 }
 
 const invokedPath = process.argv[1];

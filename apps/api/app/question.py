@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .agent.runner import LangGraphAgentRunner, create_langgraph_agent_turn_runner
 from .agent.types import AgentEvent, AgentTurnInput
 from .config import Settings, get_settings
+from .identity import IdentityValidationError, decode_principal_token
 from .observability import metrics
 
 router = APIRouter()
@@ -41,7 +42,13 @@ class QuestionMessage(BaseModel):
 
 class QuestionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    run_id: str | None = Field(default=None, min_length=1, max_length=200, alias="runId")
+    run_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+        alias="runId",
+    )
     thread_id: str | None = Field(default=None, min_length=1, max_length=200, alias="threadId")
     corpus_revision: str | None = Field(default=None, min_length=1, max_length=200, alias="corpusRevision")
     messages: list[QuestionMessage] = Field(min_length=1, max_length=MAX_MESSAGES)
@@ -91,30 +98,28 @@ def _request_id(request: Request) -> str:
         return supplied
     return str(uuid4())
 
-def _access_scope(request: Request) -> dict[str, object] | None:
-    raw = request.headers.get("x-access-scope")
+def _configured_principal_secret(settings: object | None = None) -> str | None:
+    configured = os.environ.get("INTERNAL_PRINCIPAL_SECRET")
+    if configured and configured.strip():
+        return configured.strip()
+    value = getattr(settings, "INTERNAL_PRINCIPAL_SECRET", None)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _authenticated_access_scope(
+    request: Request, settings: object
+) -> dict[str, object] | None:
+    raw = request.headers.get("x-principal")
     if raw is None:
         return None
-    if len(raw) > 8_192:
-        raise _internal_error(400, "invalid_request", "Invalid request")
+    secret = _configured_principal_secret(settings)
+    if secret is None:
+        raise _internal_error(503, "service_unavailable", "Question service unavailable")
     try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as error:
-        raise _internal_error(400, "invalid_request", "Invalid request") from error
-    if not isinstance(value, dict):
-        raise _internal_error(400, "invalid_request", "Invalid request")
-    for key, item in value.items():
-        if not isinstance(key, str) or not key.strip():
-            raise _internal_error(400, "invalid_request", "Invalid request")
-        if isinstance(item, (dict, tuple, set)) or (
-            not isinstance(item, (str, int, float, bool, list, type(None)))
-        ):
-            raise _internal_error(400, "invalid_request", "Invalid request")
-        if isinstance(item, list) and not all(
-            isinstance(entry, (str, int, float, bool)) for entry in item
-        ):
-            raise _internal_error(400, "invalid_request", "Invalid request")
-    return value
+        return decode_principal_token(raw, secret).access_scope()
+    except IdentityValidationError as error:
+        raise _internal_error(401, "unauthorized", "Authentication required") from error
+
 
 
 def _sse(event: AgentEvent) -> bytes:
@@ -171,7 +176,7 @@ async def _event_stream(
 
     async def run() -> None:
         try:
-            await runner.run_turn(turn, emit, cancellation)
+            result = await runner.run_turn(turn, emit, cancellation)
         finally:
             await queue.put(None)
 
@@ -201,6 +206,52 @@ async def _event_stream(
             yield _sse(event)
             if event.event_type in {"run.completed", "run.failed"}:
                 terminal_seen = True
+            if event.event_type in {"run.completed", "run.failed"}:
+                prompt_tokens = event.payload.get("promptTokens")
+                completion_tokens = event.payload.get("completionTokens")
+                total_tokens = event.payload.get("totalTokens")
+                generation_ms = event.payload.get("generationMs")
+                queue_ms = event.payload.get("queueMs")
+                ttft_ms = event.payload.get("ttftMs")
+                inter_token_latency_ms = event.payload.get("interTokenLatencyMs")
+                metrics.observe_usage(
+                    provider=provider,
+                    prompt_tokens=(
+                        prompt_tokens
+                        if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool)
+                        else None
+                    ),
+                    completion_tokens=(
+                        completion_tokens
+                        if isinstance(completion_tokens, int) and not isinstance(completion_tokens, bool)
+                        else None
+                    ),
+                    total_tokens=(
+                        total_tokens
+                        if isinstance(total_tokens, int) and not isinstance(total_tokens, bool)
+                        else None
+                    ),
+                    generation_ms=(
+                        generation_ms
+                        if isinstance(generation_ms, (int, float)) and not isinstance(generation_ms, bool)
+                        else None
+                    ),
+                    queue_ms=(
+                        queue_ms
+                        if isinstance(queue_ms, (int, float)) and not isinstance(queue_ms, bool)
+                        else None
+                    ),
+                    ttft_ms=(
+                        ttft_ms
+                        if isinstance(ttft_ms, (int, float)) and not isinstance(ttft_ms, bool)
+                        else None
+                    ),
+                    inter_token_latency_ms=(
+                        inter_token_latency_ms
+                        if isinstance(inter_token_latency_ms, (int, float)) and not isinstance(inter_token_latency_ms, bool)
+                        else None
+                    ),
+                )
                 code = event.payload.get("code")
                 outcome = "completed" if event.event_type == "run.completed" else "timeout" if code == "timeout" else "cancelled" if code == "aborted" else "failed"
                 metrics.observe_request(provider=provider, outcome=outcome, code=str(code) if code else None)
@@ -219,14 +270,14 @@ async def question(
     authorization: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
     _authorize(authorization, _configured_token())
-    access_scope = _access_scope(request)
     request_id = _request_id(request)
     try:
         settings: Settings = get_settings()
         provider = getattr(settings, "PROVIDER_NAME", "hosted")
+        access_scope = _authenticated_access_scope(request, settings)
         if payload.corpus_revision is not None and payload.corpus_revision != settings.PINECONE_CORPUS_REVISION:
             raise _internal_error(400, "invalid_request", "Invalid request")
-        if provider == "local" and not access_scope:
+        if not access_scope:
             raise _internal_error(401, "unauthorized", "Authenticated access scope is required")
         runner = create_langgraph_agent_turn_runner(settings=settings)
     except (ValidationError, ValueError, OSError, RuntimeError):

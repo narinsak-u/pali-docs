@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto";
+
 const AUTHENTICATED_TENANT = Symbol.for("pali-docs.authenticated-tenant");
 
 export interface AuthenticatedTenantContext {
@@ -37,4 +39,73 @@ export function getAuthenticatedAccessScope(
 ): Record<string, string> | undefined {
   const tenantId = getAuthenticatedTenantId(request);
   return tenantId === undefined ? undefined : { tenant: tenantId };
+}
+
+function optionalStringList(
+  scope: Record<string, unknown>,
+  key: string,
+): string[] | undefined {
+  const value = scope[key];
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length > 20 ||
+    value.some(
+      (item): item is string =>
+        typeof item !== "string" || !item.trim() || item.length > 200,
+    )
+  ) {
+    throw new Error(`authenticated Principal ${key} claim is invalid`);
+  }
+  return value.map((item) => item.trim());
+}
+
+export function createPrincipalToken(
+  scope: Record<string, unknown>,
+  secret: string,
+  now = Date.now(),
+): string {
+  const tenant = scope.tenant;
+  const principalId = scope.principalId;
+  const visibility = scope.visibility;
+  if (
+    typeof tenant !== "string" ||
+    !tenant.trim() ||
+    tenant.length > 200 ||
+    !secret.trim() ||
+    (principalId !== undefined &&
+      (typeof principalId !== "string" ||
+        !principalId.trim() ||
+        principalId.length > 200)) ||
+    (visibility !== undefined &&
+      (typeof visibility !== "string" ||
+        !visibility.trim() ||
+        visibility.length > 200))
+  ) {
+    throw new Error("authenticated Principal identity is required");
+  }
+  const roles = optionalStringList(scope, "roles");
+  const permissions = optionalStringList(scope, "permissions");
+  const documentIds = optionalStringList(scope, "documentIds");
+  const payload = {
+    iss: "pali-docs-bff",
+    aud: "pali-docs-api",
+    sub:
+      typeof principalId === "string" && principalId.trim()
+        ? principalId.trim()
+        : "bff",
+    tenantId: tenant.trim(),
+    ...(roles === undefined ? {} : { roles }),
+    ...(permissions === undefined ? {} : { permissions }),
+    ...(documentIds === undefined ? {} : { documentIds }),
+    ...(typeof visibility === "string" ? { visibility: visibility.trim() } : {}),
+    iat: Math.floor(now / 1_000),
+    exp: Math.floor(now / 1_000) + 300,
+  };
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signingInput = `v1.${encodedPayload}`;
+  const signature = createHmac("sha256", secret.trim())
+    .update(signingInput)
+    .digest("base64url");
+  return `${signingInput}.${signature}`;
 }

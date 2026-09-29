@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     LOCAL_LLM_API_KEY: str | None = None
     LOCAL_LLM_MODEL: str | None = None
     LOCAL_LLM_TIMEOUT_SECONDS: float = Field(default=60, gt=0, le=300)
-    LOCAL_LLM_MAX_OUTPUT_TOKENS: int = Field(default=1024, ge=1, le=32768)
+    LOCAL_LLM_MAX_OUTPUT_TOKENS: int = Field(default=768, ge=1, le=768)
 
     PINECONE_API_KEY: str = Field(min_length=1)
     PINECONE_INDEX_NAME: str = Field(min_length=1)
@@ -89,6 +89,7 @@ class Settings(BaseSettings):
     RAG_MAX_CONTEXT_CHARS: int = Field(default=12000, ge=1000, le=50000)
 
     INTERNAL_API_TOKEN: str | None = None
+    INTERNAL_PRINCIPAL_SECRET: str | None = None
 
     @model_validator(mode="before")
     @classmethod

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import base64
 import asyncio
+import hashlib
+import hmac
+import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +21,24 @@ from app.rag.retriever import PineconeRetriever
 from app.rag.types import GroundedBundle
 
 
+def _principal_header(tenant: str = "tenant-a") -> tuple[bytes, bytes]:
+    now = int(time.time())
+    payload = {
+        "iss": "pali-docs-bff",
+        "aud": "pali-docs-api",
+        "sub": "test-principal",
+        "tenantId": tenant,
+        "iat": now - 1,
+        "exp": now + 60,
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).rstrip(b"=").decode()
+    body = f"v1.{encoded}"
+    signature = hmac.new(b"identity-secret", body.encode(), hashlib.sha256).digest()
+    return b"x-principal", f"{body}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}".encode()
+
+
 def base_settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "PINECONE_API_KEY": "pinecone-key",
@@ -25,6 +48,7 @@ def base_settings(**overrides: object) -> Settings:
         "LOCAL_LLM_BASE_URL": "http://vllm.internal:8000/v1",
         "LOCAL_LLM_API_KEY": "server-key",
         "LOCAL_LLM_MODEL": "Qwen/Qwen3-8B",
+        "INTERNAL_PRINCIPAL_SECRET": "identity-secret",
     }
     values.update(overrides)
     return Settings(**values)
@@ -37,7 +61,7 @@ def payload() -> question_module.QuestionRequest:
 
 
 @pytest.mark.asyncio
-async def test_question_boundary_maps_authenticated_scope_header_to_turn(
+async def test_question_boundary_maps_signed_principal_to_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, AgentTurnInput] = {}
@@ -47,6 +71,7 @@ async def test_question_boundary_maps_authenticated_scope_header_to_turn(
         if False:
             yield b""
 
+    monkeypatch.setenv("INTERNAL_PRINCIPAL_SECRET", "identity-secret")
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
     monkeypatch.setattr(question_module, "get_settings", lambda: SimpleNamespace())
     monkeypatch.setattr(
@@ -61,7 +86,10 @@ async def test_question_boundary_maps_authenticated_scope_header_to_turn(
             "type": "http",
             "method": "POST",
             "path": "/v1/question",
-            "headers": [(b"x-access-scope", b'{"tenant":"tenant-a"}')],
+            "headers": [
+                _principal_header(),
+                (b"x-access-scope", b'{"tenant":"tenant-b"}'),
+            ],
         }
     )
     response = await question_module.question(payload(), request)
@@ -71,9 +99,10 @@ async def test_question_boundary_maps_authenticated_scope_header_to_turn(
 
 
 @pytest.mark.asyncio
-async def test_question_boundary_rejects_scope_header_with_invalid_shape(
+async def test_question_boundary_rejects_forged_principal_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("INTERNAL_PRINCIPAL_SECRET", "identity-secret")
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
     monkeypatch.setattr(question_module, "get_settings", lambda: SimpleNamespace())
 
@@ -82,11 +111,12 @@ async def test_question_boundary_rejects_scope_header_with_invalid_shape(
             "type": "http",
             "method": "POST",
             "path": "/v1/question",
-            "headers": [(b"x-access-scope", b"[]")],
+            "headers": [(b"x-principal", b"v1.invalid.invalid")],
         }
     )
-    with pytest.raises(HTTPException, match="Invalid request"):
+    with pytest.raises(HTTPException) as error:
         await question_module.question(payload(), request)
+    assert error.value.status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -156,10 +186,13 @@ class EchoArgs(BaseModel):
 
 
 class ToolStages:
+    seen_inputs: list[AgentTurnInput] = []
+
     async def tool_call(self, _input: AgentTurnInput, _tools: object, *, tool_choice: object):
         return ToolInvocation(callId="call-1", name="echo", arguments={"value": "hello"})
 
-    async def classify(self, _input: AgentTurnInput):
+    async def classify(self, input: AgentTurnInput):
+        self.seen_inputs.append(input)
         return {"needsRetrieval": False, "query": "greeting"}
 
     async def direct_answer(self, _input: AgentTurnInput):
@@ -211,6 +244,7 @@ async def test_langgraph_runner_executes_application_tool_and_emits_lifecycle() 
         (event.event_type, event.payload) for event in events
     ]
     assert seen == ["hello"]
+    assert ToolStages.seen_inputs[0].tool_results[0].result == {"echo": "hello"}
     assert [event.event_type for event in events] == [
         "run.started",
         "tool.started",

@@ -93,7 +93,23 @@ const retrievalCompletedPayloadSchema = z
       });
     }
   });
-const codePayloadSchema = z.object({ runId: z.string().min(1), code: z.string().min(1) }).strict();
+const retrievalFailedPayloadSchema = z
+  .object({ runId: z.string().min(1), code: z.string().min(1) })
+  .strict();
+const failedPayloadSchema = z
+  .object({
+    runId: z.string().min(1),
+    code: z.string().min(1),
+    cost: z.number().finite().nonnegative().optional(),
+    promptTokens: z.number().int().nonnegative().optional(),
+    completionTokens: z.number().int().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative().optional(),
+    generationMs: z.number().finite().nonnegative().optional(),
+    queueMs: z.number().finite().nonnegative().optional(),
+    ttftMs: z.number().finite().nonnegative().optional(),
+    interTokenLatencyMs: z.number().finite().nonnegative().optional(),
+  })
+  .strict();
 const rewrittenPayloadSchema = z
   .object({ runId: z.string().min(1), attempt: z.number().int().positive(), query: z.string().min(1) })
   .strict();
@@ -127,7 +143,11 @@ const completedPayloadSchema = z
     cost: z.number().finite().nonnegative().optional(),
     promptTokens: z.number().int().nonnegative().optional(),
     completionTokens: z.number().int().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative().optional(),
+    generationMs: z.number().finite().nonnegative().optional(),
     queueMs: z.number().finite().nonnegative().optional(),
+    ttftMs: z.number().finite().nonnegative().optional(),
+    interTokenLatencyMs: z.number().finite().nonnegative().optional(),
   })
   .strict();
 const toolPayloadSchema = z
@@ -201,7 +221,7 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
       };
     }
     case "retrieval.failed": {
-      const payload = requireRunId(codePayloadSchema.parse(envelope.payload));
+      const payload = requireRunId(retrievalFailedPayloadSchema.parse(envelope.payload));
       return { type: envelope.eventType, runId: envelope.runId, code: payload.code };
     }
     case "query.rewritten": {
@@ -243,7 +263,13 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
         ...(payload.completionTokens === undefined
           ? {}
           : { completionTokens: payload.completionTokens }),
+        ...(payload.totalTokens === undefined ? {} : { totalTokens: payload.totalTokens }),
+        ...(payload.generationMs === undefined ? {} : { generationMs: payload.generationMs }),
         ...(payload.queueMs === undefined ? {} : { queueMs: payload.queueMs }),
+        ...(payload.ttftMs === undefined ? {} : { ttftMs: payload.ttftMs }),
+        ...(payload.interTokenLatencyMs === undefined
+          ? {}
+          : { interTokenLatencyMs: payload.interTokenLatencyMs }),
       };
     }
     case "tool.started":
@@ -258,8 +284,24 @@ function parseBackendEvent(value: unknown, runId: string, sequence: number): Age
       };
     }
     case "run.failed": {
-      const payload = requireRunId(codePayloadSchema.parse(envelope.payload));
-      return { type: envelope.eventType, runId: envelope.runId, code: payload.code };
+      const payload = requireRunId(failedPayloadSchema.parse(envelope.payload));
+      return {
+        type: envelope.eventType,
+        runId: envelope.runId,
+        code: payload.code,
+        ...(payload.cost === undefined ? {} : { cost: payload.cost }),
+        ...(payload.promptTokens === undefined ? {} : { promptTokens: payload.promptTokens }),
+        ...(payload.completionTokens === undefined
+          ? {}
+          : { completionTokens: payload.completionTokens }),
+        ...(payload.totalTokens === undefined ? {} : { totalTokens: payload.totalTokens }),
+        ...(payload.generationMs === undefined ? {} : { generationMs: payload.generationMs }),
+        ...(payload.queueMs === undefined ? {} : { queueMs: payload.queueMs }),
+        ...(payload.ttftMs === undefined ? {} : { ttftMs: payload.ttftMs }),
+        ...(payload.interTokenLatencyMs === undefined
+          ? {}
+          : { interTokenLatencyMs: payload.interTokenLatencyMs }),
+      };
     }
   }
 }
@@ -292,6 +334,7 @@ export async function consumeLangGraphSse(
 
   const consumeLine = (line: string): void => {
     if (line === "") {
+      if (terminated) throw new Error("LangGraph event received after terminal event");
       if (!dataLines.length) return;
       if (!runId) {
         const first = envelopeSchema.parse(JSON.parse(dataLines.join("\n")));

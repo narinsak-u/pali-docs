@@ -24,19 +24,33 @@ services:
       - hermes
       - --tensor-parallel-size
       - "1"
+      - --max-model-len
+      - "8192"
+      - --max-num-seqs
+      - "4"
+      - --max-num-batched-tokens
+      - "8192"
+      - --gpu-memory-utilization
+      - "0.9"
       - --dtype
       - bfloat16
       - --api-key
       - ${VLLM_API_KEY:?VLLM_API_KEY must be set}
     environment:
       HF_HOME: /root/.cache/huggingface
+      VLLM_CACHE_ROOT: /root/.cache/vllm
+      TORCHINDUCTOR_CACHE_DIR: /root/.cache/torch
+      TRITON_CACHE_DIR: /root/.cache/triton
       HF_TOKEN: ${HF_TOKEN:-}
     ports:
       # The model endpoint is host-private; only the server-side API may use it.
       - "127.0.0.1:8000:8000"
     shm_size: "16gb"
     volumes:
-      - vllm-cache:/root/.cache/huggingface
+      - vllm-model-cache:/root/.cache/huggingface
+      - vllm-compile-cache:/root/.cache/vllm
+      - torch-compile-cache:/root/.cache/torch
+      - triton-cache:/root/.cache/triton
     deploy:
       resources:
         reservations:
@@ -58,4 +72,7 @@ services:
       start_period: 90s
 
 volumes:
-  vllm-cache:
+  vllm-model-cache:
+  vllm-compile-cache:
+  torch-compile-cache:
+  triton-cache:

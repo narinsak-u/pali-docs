@@ -7,6 +7,7 @@ import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -89,6 +90,7 @@ def _validate_local_settings(settings: object) -> None:
     base_url = getattr(settings, "LOCAL_LLM_BASE_URL", None)
     timeout = getattr(settings, "LOCAL_LLM_TIMEOUT_SECONDS", None)
     max_tokens = getattr(settings, "LOCAL_LLM_MAX_OUTPUT_TOKENS", None)
+    principal_secret = getattr(settings, "INTERNAL_PRINCIPAL_SECRET", None)
     if (
         not isinstance(model, str)
         or model != QWEN3_VLLM_PROFILE.model_id
@@ -96,12 +98,14 @@ def _validate_local_settings(settings: object) -> None:
         or not api_key.strip()
         or not isinstance(base_url, str)
         or not base_url.strip()
+        or not isinstance(principal_secret, str)
+        or not principal_secret.strip()
         or not isinstance(timeout, (int, float))
         or isinstance(timeout, bool)
         or not 0 < timeout <= 300
         or not isinstance(max_tokens, int)
         or isinstance(max_tokens, bool)
-        or not 0 < max_tokens <= 32768
+        or not 0 < max_tokens <= QWEN3_VLLM_PROFILE.max_output_tokens
     ):
         raise ValueError("Invalid local provider configuration")
     try:
@@ -211,15 +215,105 @@ class LangChainModelStages:
     def __init__(self, model: Any | None = None, settings: Settings | Any | None = None) -> None:
         self._settings = settings
         self._model = model
+        self._telemetry: dict[str, int | float] = {}
+
+    @property
+    def telemetry(self) -> dict[str, int | float]:
+        return dict(self._telemetry)
 
     def _provider(self) -> str:
         return str(getattr(self._settings or get_settings(), "PROVIDER_NAME", ""))
 
-    async def _ainvoke(self, runnable: Any, messages: object) -> Any:
+    def reset_telemetry(self) -> None:
+        self._telemetry.clear()
+
+    def _record_usage(self, response: object) -> None:
+        sources: list[object] = [response]
+        if isinstance(response, Mapping):
+            sources.extend(
+                [
+                    response.get("usage_metadata"),
+                    response.get("response_metadata"),
+                    response.get("raw"),
+                ]
+            )
+        for source in tuple(sources):
+            if source is None:
+                continue
+            usage = getattr(source, "usage_metadata", None)
+            metadata = getattr(source, "response_metadata", None)
+            if isinstance(source, Mapping):
+                usage = source.get("usage_metadata", usage)
+                metadata = source.get("response_metadata", metadata)
+            sources.extend([usage, metadata])
+        observed: dict[str, int | float] = {}
+        fields = {
+            "promptTokens": ("prompt_tokens", "input_tokens"),
+            "completionTokens": ("completion_tokens", "output_tokens"),
+            "totalTokens": ("total_tokens",),
+            "queueMs": ("queue_ms", "queue_time_ms"),
+            "ttftMs": ("ttft_ms", "time_to_first_token_ms"),
+            "interTokenLatencyMs": ("inter_token_latency_ms",),
+        }
+        for source in sources:
+            if not isinstance(source, Mapping):
+                continue
+            token_usage = source.get("token_usage")
+            candidates = [source, token_usage]
+            for candidate in candidates:
+                if not isinstance(candidate, Mapping):
+                    continue
+                for output_key, input_keys in fields.items():
+                    if output_key in observed:
+                        continue
+                    for input_key in input_keys:
+                        value = candidate.get(input_key)
+                        valid = (
+                            isinstance(value, (int, float))
+                            and not isinstance(value, bool)
+                            and value >= 0
+                            and (
+                                output_key.endswith("Ms")
+                                or isinstance(value, int)
+                            )
+                        )
+                        if valid:
+                            observed[output_key] = value
+                            break
+        for output_key, value in observed.items():
+            self._telemetry[output_key] = self._telemetry.get(output_key, 0) + value
+
+    async def _ainvoke(self, runnable: Any, messages: object, run_id: str) -> Any:
+        started = perf_counter()
+        invoke_config = {
+            "metadata": {"runId": run_id},
+            "run_name": f"pali-agent-{run_id}",
+        }
+        invoke = runnable.ainvoke
+        parameters = inspect.signature(invoke).parameters
+        supports_config = "config" in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
         if self._provider() != "local":
-            return await runnable.ainvoke(messages)
-        async with _local_call_lock():
-            return await runnable.ainvoke(messages)
+            response = (
+                await invoke(messages, config=invoke_config)
+                if supports_config
+                else await invoke(messages)
+            )
+        else:
+            async with _local_call_lock():
+                response = (
+                    await invoke(messages, config=invoke_config)
+                    if supports_config
+                    else await invoke(messages)
+                )
+        self._telemetry["generationMs"] = round(
+            float(self._telemetry.get("generationMs", 0)) + (perf_counter() - started) * 1000,
+            3,
+        )
+        self._record_usage(response)
+        return response
     def _chat(self) -> Any:
         configured_settings = self._settings
         if self._model is not None:
@@ -274,13 +368,15 @@ class LangChainModelStages:
             else:
                 messages.append(HumanMessage(content=message.content))
         return messages
-    async def _structured(self, schema: type[Any], messages: list[Any]) -> Any:
+    async def _structured(
+        self, schema: type[Any], messages: list[Any], run_id: str
+    ) -> Any:
         kwargs: dict[str, object] = {}
         local = self._provider() == "local"
         if local:
             kwargs.update(method="function_calling", strict=True, include_raw=True)
         structured = self._chat().with_structured_output(schema, **kwargs)
-        value = await self._ainvoke(structured, messages)
+        value = await self._ainvoke(structured, messages, run_id)
         if local and isinstance(value, Mapping) and {"raw", "parsed"}.issubset(value):
             if value.get("parsing_error") is not None:
                 raise ValueError("structured output parsing failed")
@@ -425,7 +521,7 @@ class LangChainModelStages:
                 parallel_tool_calls=False,
                 strict=True,
             )
-        response = await self._ainvoke(runnable, self._messages(input))
+        response = await self._ainvoke(runnable, self._messages(input), input.run_id)
         invocation = self.parse_tool_call(
             response,
             allowed_names,
@@ -454,6 +550,7 @@ class LangChainModelStages:
                     ),
                     *self._messages(input),
                 ],
+                input.run_id,
             ),
         )
 
@@ -476,6 +573,7 @@ class LangChainModelStages:
                         content=f"The previous query produced insufficient evidence: {json.dumps(current_query)}"
                     ),
                 ],
+                input.run_id,
             ),
         )
 
@@ -504,6 +602,7 @@ Allowed citation IDs: {json.dumps(allowed_ids)}
             await self._structured(
                 GroundedAnswer,
                 [SystemMessage(content=system), *self._messages(input), HumanMessage(content=evidence)],
+                input.run_id,
             ),
         )
 
@@ -526,6 +625,7 @@ Allowed citation IDs: {json.dumps(allowed_ids)}
                     HumanMessage(content=evidence),
                     AIMessage(content=draft.model_dump_json()),
                 ],
+                input.run_id,
             ),
         )
 
@@ -544,6 +644,7 @@ Allowed citation IDs: {json.dumps(allowed_ids)}
                     ),
                     *self._messages(input),
                 ],
+                input.run_id,
             ),
         )
 
@@ -559,9 +660,9 @@ Allowed citation IDs: {json.dumps(allowed_ids)}
                         content="Generate 1 to 3 short follow-up questions in the user's language. Ground them only in the validated answer."
                     ),
                 ],
+                input.run_id,
             ),
         )
-
 
 class _LegacyStageAdapter:
     """Accept the names used by the existing AI SDK stage seam without leaking it."""
@@ -735,6 +836,9 @@ class LangGraphAgentRunner:
             if is_cancelled(cancellation):
                 raise RunAborted
             stages = self._stage_instance()
+            reset_telemetry = getattr(stages, "reset_telemetry", None)
+            if callable(reset_telemetry):
+                reset_telemetry()
             retriever = self._retriever_instance()
             graph = build_agent_graph(retriever, stages)
 
@@ -775,7 +879,7 @@ class LangGraphAgentRunner:
             ):
                 if not isinstance(update, Mapping):
                     continue
-                for node_update in update.values():
+                for node_name, node_update in update.items():
                     if not isinstance(node_update, Mapping):
                         continue
                     for graph_event in node_update.get("events", []):

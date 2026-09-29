@@ -76,6 +76,26 @@ function streamResponse(body: string, contentType = "text/event-stream") {
   });
 }
 
+const readyIdentity = {
+  status: "ready" as const,
+  service: "api" as const,
+  model: "Qwen/Qwen3-8B",
+  servingRevision: "vllm-1",
+  imageDigest: "vllm@sha256:test",
+  tokenizer: "Qwen/Qwen3-8B",
+  tokenizerRevision: "vllm-1",
+  parser: "hermes",
+  chatTemplate: "qwen3-pinned",
+  precision: "bfloat16",
+  servingLimits: {
+    maxModelLen: 8192,
+    maxNumSeqs: 4,
+    maxNumBatchedTokens: 8192,
+    gpuMemoryUtilization: 0.9,
+    maxOutputTokens: 768,
+  },
+};
+
 const input: AgentTurnInput = {
   runId: "run-1",
   messages: [
@@ -269,7 +289,7 @@ describe("FastAPI runner", () => {
     ].join("");
     const fetchImpl = vi.fn(async (url: any, request: any) => {
       if (url === "https://api.example/internal/readyz") {
-        return new Response(JSON.stringify({ model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" }), {
+        return new Response(JSON.stringify(readyIdentity), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -278,11 +298,9 @@ describe("FastAPI runner", () => {
       expect(request.headers).toMatchObject({
         "Content-Type": "application/json",
         Authorization: "Bearer secret",
-        "X-Access-Scope": JSON.stringify({
-          tenant: "tenant-1",
-          authorization: "not-forwarded",
-        }),
       });
+      expect(request.headers["X-Principal"]).toMatch(/^v1\..+\..+$/);
+      expect(request.headers).not.toHaveProperty("X-Access-Scope");
       expect(JSON.parse(String(request.body))).toEqual({
         runId: "run-1",
         corpusRevision: "corpus-1",
@@ -298,6 +316,7 @@ describe("FastAPI runner", () => {
     const runner = createFastApiRunner({
       baseUrl: "https://api.example///",
       internalToken: "secret",
+      identitySecret: "identity-secret",
       corpusRevision: "corpus-1",
       fetchImpl,
     });
@@ -317,16 +336,15 @@ describe("FastAPI runner", () => {
     expect(sink.emit).toHaveBeenCalledTimes(6);
     expect(runner.getRetrievedSourceIds()).toEqual(["source-a"]);
     expect(runner.observedCorpusRevision).toBe("corpus-1");
-    expect(runner.observedServingMetadata).toEqual({
-      model: "Qwen/Qwen3-8B",
-      servingRevision: "vllm-1",
-    });
+    const { status: _status, service: _service, ...observedIdentity } = readyIdentity;
+    expect(runner.observedServingMetadata).toEqual(observedIdentity);
   });
 
   it("fails closed when FastAPI readiness identity is missing", async () => {
     const runner = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      identitySecret: "identity-secret",
       corpusRevision: "corpus-1",
       fetchImpl: vi.fn(async () => new Response(JSON.stringify({ status: "ok" }), { status: 200 })),
     });
@@ -346,8 +364,9 @@ describe("FastAPI runner", () => {
     const runner = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      identitySecret: "identity-secret",
       corpusRevision: "corpus-1",
-      fetchImpl: vi.fn(async (url: any) => url.endsWith("/readyz") ? new Response(JSON.stringify({ model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" }), { status: 200 }) : response),
+      fetchImpl: vi.fn(async (url: any) => url.endsWith("/readyz") ? new Response(JSON.stringify(readyIdentity), { status: 200 }) : response),
     });
     await expect(runner.runTurn(input, { emit: vi.fn() })).rejects.toThrow(message);
   });
@@ -356,8 +375,9 @@ describe("FastAPI runner", () => {
     const malformed = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      identitySecret: "identity-secret",
       corpusRevision: "corpus-1",
-      fetchImpl: vi.fn(async (url: any) => url.endsWith("/readyz") ? new Response(JSON.stringify({ model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" }), { status: 200 }) : streamResponse("data: not-json\n\n")),
+      fetchImpl: vi.fn(async (url: any) => url.endsWith("/readyz") ? new Response(JSON.stringify(readyIdentity), { status: 200 }) : streamResponse("data: not-json\n\n")),
     });
     await expect(malformed.runTurn(input, { emit: vi.fn() })).rejects.toThrow(
       "not valid JSON",
@@ -366,9 +386,10 @@ describe("FastAPI runner", () => {
     const unterminated = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      identitySecret: "identity-secret",
       corpusRevision: "corpus-1",
       fetchImpl: vi.fn(async (url: any) =>
-        url.endsWith("/readyz") ? new Response(JSON.stringify({ model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" }), { status: 200 }) : streamResponse(envelope("run-1", 0, "run.started", { runId: "run-1" })),
+        url.endsWith("/readyz") ? new Response(JSON.stringify(readyIdentity), { status: 200 }) : streamResponse(envelope("run-1", 0, "run.started", { runId: "run-1" })),
       ),
     });
     await expect(unterminated.runTurn(input, { emit: vi.fn() })).rejects.toThrow(
@@ -380,9 +401,10 @@ describe("FastAPI runner", () => {
     const wrongRunId = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      identitySecret: "identity-secret",
       corpusRevision: "corpus-1",
       fetchImpl: vi.fn(async (url: any) =>
-        url.endsWith("/readyz") ? new Response(JSON.stringify({ model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" }), { status: 200 }) : streamResponse(envelope("other-run", 0, "run.started", { runId: "other-run" })),
+        url.endsWith("/readyz") ? new Response(JSON.stringify(readyIdentity), { status: 200 }) : streamResponse(envelope("other-run", 0, "run.started", { runId: "other-run" })),
       ),
     });
     await expect(wrongRunId.runTurn(input, { emit: vi.fn() })).rejects.toThrow(
@@ -392,9 +414,10 @@ describe("FastAPI runner", () => {
     const missingBody = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      identitySecret: "identity-secret",
       corpusRevision: "corpus-1",
       fetchImpl: vi.fn(
-        async (url: any) => url.endsWith("/readyz") ? new Response(JSON.stringify({ model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" }), { status: 200 }) :
+        async (url: any) => url.endsWith("/readyz") ? new Response(JSON.stringify(readyIdentity), { status: 200 }) :
           new Response(null, {
             status: 200,
             headers: { "content-type": "text/event-stream" },
@@ -410,9 +433,10 @@ describe("FastAPI runner", () => {
     const runner = createFastApiRunner({
       baseUrl: "https://api.example",
       internalToken: "secret",
+      identitySecret: "identity-secret",
       corpusRevision: "corpus-1",
       fetchImpl: vi.fn(async (url: any) =>
-        url.endsWith("/readyz") ? new Response(JSON.stringify({ model: "Qwen/Qwen3-8B", servingRevision: "vllm-1" }), { status: 200 }) : streamResponse(
+        url.endsWith("/readyz") ? new Response(JSON.stringify(readyIdentity), { status: 200 }) : streamResponse(
           [
             envelope("run-1", 0, "run.started", { runId: "run-1" }),
             envelope("run-1", 1, "run.failed", { runId: "run-1", code: "runner_error" }),

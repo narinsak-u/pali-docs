@@ -119,6 +119,26 @@ describe("LangGraph retrieval event contract", () => {
       },
     ]);
   });
+
+  it("forwards terminal failure telemetry", async () => {
+    const emitted = await consume([
+      envelope(0, "run.failed", {
+        code: "runner_error",
+        promptTokens: 12,
+        generationMs: 4.5,
+      }),
+    ]);
+
+    expect(emitted).toEqual([
+      {
+        type: "run.failed",
+        runId: "run-1",
+        code: "runner_error",
+        promptTokens: 12,
+        generationMs: 4.5,
+      },
+    ]);
+  });
   it("rejects internal tool names and results at the public SSE boundary", async () => {
     await expect(
       consume([
@@ -147,5 +167,14 @@ describe("LangGraph retrieval event contract", () => {
         envelope(1, "run.completed", { outcome: "answered" }),
       ]),
     ).rejects.toThrow();
+  });
+
+  it("rejects events after a terminal event", async () => {
+    await expect(
+      consume([
+        envelope(0, "run.completed", { outcome: "answered" }),
+        envelope(1, "answer.completed", { text: "late" }),
+      ]),
+    ).rejects.toThrow("after terminal event");
   });
 });

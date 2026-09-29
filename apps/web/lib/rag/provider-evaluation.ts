@@ -27,6 +27,11 @@ export interface ServingMetadata {
   endpoint?: string;
   imageDigest?: string;
   tokenizer?: string;
+  tokenizerRevision?: string;
+  parser?: string;
+  chatTemplate?: string;
+  precision?: string;
+  servingLimits?: Record<string, number>;
   decoding?: Record<string, string | number | boolean>;
   [key: string]: unknown;
 }
@@ -78,14 +83,23 @@ export interface ProviderTrace {
     servingRevision: string;
     imageDigest?: string;
     tokenizer?: string;
+    tokenizerRevision?: string;
+    parser?: string;
+    chatTemplate?: string;
+    precision?: string;
+    servingLimits?: Record<string, number>;
   };
   model: string;
   servingRevision: string;
   endpoint?: string;
   imageDigest?: string;
   tokenizer?: string;
+  tokenizerRevision?: string;
+  parser?: string;
+  chatTemplate?: string;
+  precision?: string;
+  servingLimits?: Record<string, number>;
   decoding?: Record<string, string | number | boolean>;
-  outcome: RagActualOutcome;
   grounding: {
     corpusRevision: string;
     expectedSourceIds: string[];
@@ -121,7 +135,10 @@ export interface ProviderTrace {
     acceptedCount?: number;
     promptTokens?: number;
     completionTokens?: number;
+    totalTokens?: number;
     queueMs?: number;
+    ttftMs?: number;
+    interTokenLatencyMs?: number;
   };
   tools: {
     attempted: number;
@@ -129,6 +146,7 @@ export interface ProviderTrace {
     failed: number;
   };
   toolTelemetryPresent?: boolean;
+  outcome: RagActualOutcome;
   failure?: string;
   cancelled?: boolean;
   cost?: number;
@@ -208,6 +226,7 @@ interface RunMetrics {
   retrievalAttempts: number;
   retrievalMs: number;
   generationMs: number;
+  generationTelemetryPresent: boolean;
   candidateCount?: number;
   acceptedCount?: number;
   answer?: string;
@@ -328,7 +347,17 @@ function unicodeMetrics(text: string): {
 
 function safeServingMetadata(metadata: ServingMetadata): Pick<
   ProviderTrace,
-  "model" | "servingRevision" | "endpoint" | "imageDigest" | "tokenizer" | "decoding"
+  | "model"
+  | "servingRevision"
+  | "endpoint"
+  | "imageDigest"
+  | "tokenizer"
+  | "tokenizerRevision"
+  | "parser"
+  | "chatTemplate"
+  | "precision"
+  | "servingLimits"
+  | "decoding"
 > {
   const model = metadata.model.trim();
   const servingRevision = metadata.servingRevision.trim();
@@ -343,14 +372,52 @@ function safeServingMetadata(metadata: ServingMetadata): Pick<
   };
   const result: Pick<
     ProviderTrace,
-    "model" | "servingRevision" | "endpoint" | "imageDigest" | "tokenizer" | "decoding"
+    | "model"
+    | "servingRevision"
+    | "endpoint"
+    | "imageDigest"
+    | "tokenizer"
+    | "tokenizerRevision"
+    | "parser"
+    | "chatTemplate"
+    | "precision"
+    | "servingLimits"
+    | "decoding"
   > = {
     model,
     servingRevision,
   };
-  for (const key of ["endpoint", "imageDigest", "tokenizer"] as const) {
+  for (const key of [
+    "endpoint",
+    "imageDigest",
+    "tokenizer",
+    "tokenizerRevision",
+    "parser",
+    "chatTemplate",
+    "precision",
+  ] as const) {
     const value = metadata[key];
     if (typeof value === "string" && value.trim()) result[key] = value.trim();
+  }
+  if (metadata.servingLimits) {
+    const servingLimits: Record<string, number> = {};
+    for (const [key, value] of Object.entries(metadata.servingLimits)) {
+      if (
+        [
+          "maxModelLen",
+          "maxNumSeqs",
+          "maxNumBatchedTokens",
+          "gpuMemoryUtilization",
+          "maxOutputTokens",
+        ].includes(key) &&
+        typeof value === "number" &&
+        Number.isFinite(value) &&
+        value >= 0
+      ) {
+        servingLimits[key] = value;
+      }
+    }
+    if (Object.keys(servingLimits).length > 0) result.servingLimits = servingLimits;
   }
   if (result.endpoint) {
     try {
@@ -398,6 +465,7 @@ function extractRunMetrics(): {
     retrievalAttempts: 0,
     retrievalMs: 0,
     generationMs: 0,
+    generationTelemetryPresent: false,
     capacity: {},
     tools: { attempted: 0, succeeded: 0, failed: 0 },
     toolEvents: [],
@@ -449,6 +517,24 @@ function extractRunMetrics(): {
         case "run.failed":
           metrics.failure = safeCode(event.code);
           metrics.cancelled = event.code === "aborted" || event.code === "cancelled";
+          if (event.type === "run.failed") {
+            if (typeof event.cost === "number" && Number.isFinite(event.cost)) metrics.cost = event.cost;
+            if (typeof event.promptTokens === "number") metrics.capacity.promptTokens = event.promptTokens;
+            if (typeof event.completionTokens === "number") metrics.capacity.completionTokens = event.completionTokens;
+            if (typeof event.totalTokens === "number") metrics.capacity.totalTokens = event.totalTokens;
+            if (typeof event.generationMs === "number" && Number.isFinite(event.generationMs)) {
+              metrics.generationMs = Math.max(0, event.generationMs);
+              metrics.generationTelemetryPresent = true;
+            }
+            if (typeof event.queueMs === "number" && Number.isFinite(event.queueMs)) metrics.capacity.queueMs = event.queueMs;
+            if (typeof event.ttftMs === "number" && Number.isFinite(event.ttftMs)) metrics.capacity.ttftMs = event.ttftMs;
+            if (
+              typeof event.interTokenLatencyMs === "number" &&
+              Number.isFinite(event.interTokenLatencyMs)
+            ) {
+              metrics.capacity.interTokenLatencyMs = event.interTokenLatencyMs;
+            }
+          }
           break;
         case "generation.started":
           generationStarted = now;
@@ -474,7 +560,16 @@ function extractRunMetrics(): {
           if (typeof event.cost === "number" && Number.isFinite(event.cost)) metrics.cost = event.cost;
           if (typeof event.promptTokens === "number") metrics.capacity.promptTokens = event.promptTokens;
           if (typeof event.completionTokens === "number") metrics.capacity.completionTokens = event.completionTokens;
-          if (typeof event.queueMs === "number") metrics.capacity.queueMs = event.queueMs;
+          if (typeof event.totalTokens === "number") metrics.capacity.totalTokens = event.totalTokens;
+          if (typeof event.generationMs === "number" && Number.isFinite(event.generationMs)) {
+            metrics.generationMs = Math.max(0, event.generationMs);
+            metrics.generationTelemetryPresent = true;
+          }
+          if (typeof event.queueMs === "number" && Number.isFinite(event.queueMs)) metrics.capacity.queueMs = event.queueMs;
+          if (typeof event.ttftMs === "number" && Number.isFinite(event.ttftMs)) metrics.capacity.ttftMs = event.ttftMs;
+          if (typeof event.interTokenLatencyMs === "number" && Number.isFinite(event.interTokenLatencyMs)) {
+            metrics.capacity.interTokenLatencyMs = event.interTokenLatencyMs;
+          }
           break;
         case "tool.started":
         case "tool.completed":
@@ -522,8 +617,13 @@ function extractRunMetrics(): {
         default:
           break;
       }
-      if (generationStarted !== undefined && event.type === "run.completed") {
-        metrics.generationMs += now - generationStarted;
+      if (
+        generationStarted !== undefined &&
+        (event.type === "run.completed" || event.type === "run.failed")
+      ) {
+        if (!metrics.generationTelemetryPresent) {
+          metrics.generationMs += now - generationStarted;
+        }
         generationStarted = undefined;
       }
     },
@@ -1060,6 +1160,11 @@ const providerTraceSchema = z
         servingRevision: z.string().min(1),
         imageDigest: z.string().min(1).optional(),
         tokenizer: z.string().min(1).optional(),
+        tokenizerRevision: z.string().min(1).optional(),
+        parser: z.string().min(1).optional(),
+        chatTemplate: z.string().min(1).optional(),
+        precision: z.string().min(1).optional(),
+        servingLimits: z.record(z.string(), z.number().finite()).optional(),
       })
       .strict()
       .optional(),
@@ -1068,6 +1173,11 @@ const providerTraceSchema = z
     endpoint: z.string().min(1).optional(),
     imageDigest: z.string().min(1).optional(),
     tokenizer: z.string().min(1).optional(),
+    tokenizerRevision: z.string().min(1).optional(),
+    parser: z.string().min(1).optional(),
+    chatTemplate: z.string().min(1).optional(),
+    precision: z.string().min(1).optional(),
+    servingLimits: z.record(z.string(), z.number().finite()).optional(),
     decoding: z.record(z.string(), traceScalarSchema).optional(),
     outcome: z.enum([
       "grounded",
@@ -1127,7 +1237,10 @@ const providerTraceSchema = z
         acceptedCount: z.number().finite().nonnegative().optional(),
         promptTokens: z.number().finite().nonnegative().optional(),
         completionTokens: z.number().finite().nonnegative().optional(),
+        totalTokens: z.number().finite().nonnegative().optional(),
         queueMs: z.number().finite().nonnegative().optional(),
+        ttftMs: z.number().finite().nonnegative().optional(),
+        interTokenLatencyMs: z.number().finite().nonnegative().optional(),
       })
       .strict(),
     evidence: z
@@ -1154,7 +1267,10 @@ const providerTraceSchema = z
             acceptedCount: z.number().finite().nonnegative().optional(),
             promptTokens: z.number().finite().nonnegative().optional(),
             completionTokens: z.number().finite().nonnegative().optional(),
+            totalTokens: z.number().finite().nonnegative().optional(),
             queueMs: z.number().finite().nonnegative().optional(),
+            ttftMs: z.number().finite().nonnegative().optional(),
+            interTokenLatencyMs: z.number().finite().nonnegative().optional(),
           })
           .strict(),
         tools: z
@@ -1266,6 +1382,15 @@ const productionBaselineSchema = z
     thresholds: thresholdSchema,
   })
   .strict();
+export function parseReviewedCasesArtifact(value: unknown): ReviewedCasesArtifact {
+  return reviewedCasesSchema.parse(value);
+}
+
+export function parseProductionBaselineArtifact(
+  value: unknown,
+): ProductionBaselineArtifact {
+  return productionBaselineSchema.parse(value);
+}
 const REQUIRED_COHORT_COUNTS: Record<EvaluationCase["category"], number> = {
   "thai-single-source": 10,
   "english-single-source": 5,
@@ -1335,6 +1460,18 @@ function reviewedCaseViolations(cases: readonly EvaluationCase[]): string[] {
     if (actual < required) violations.push(`reviewed cohort ${category} is incomplete`);
   }
   return violations;
+}
+
+export function assertReviewedCasesArtifactReady(value: unknown): ReviewedCasesArtifact {
+  const artifact = parseReviewedCasesArtifact(value);
+  const violations = reviewedCaseViolations(artifact.cases);
+  if (artifact.cases.length < 30) {
+    violations.push("authoritative reviewed-case artifact is incomplete: at least 30 cases are required");
+  }
+  if (violations.length > 0) {
+    throw new Error(`authoritative reviewed-case artifact is not ready: ${violations.join("; ")}`);
+  }
+  return artifact;
 }
 
 function canonicalEvidence(value: unknown): unknown {
@@ -1481,13 +1618,23 @@ export function decidePromotion(options: {
         trace.grounding.corpusRevision !== cases.corpusRevision ||
         trace.observedCorpusRevision !== cases.corpusRevision
       ) {
-        reasons.push(`${provider} trace corpus lineage mismatch for case ${item.caseId}`);
       }
       const observedIdentity = trace.observedServingMetadata;
+      const traceIdentity = {
+        model: trace.model,
+        servingRevision: trace.servingRevision,
+        imageDigest: trace.imageDigest,
+        tokenizer: trace.tokenizer,
+        tokenizerRevision: trace.tokenizerRevision,
+        parser: trace.parser,
+        chatTemplate: trace.chatTemplate,
+        precision: trace.precision,
+        servingLimits: trace.servingLimits,
+      };
       if (
         observedIdentity === undefined ||
-        observedIdentity.model !== trace.model ||
-        observedIdentity.servingRevision !== trace.servingRevision
+        JSON.stringify(canonicalEvidence(observedIdentity)) !==
+          JSON.stringify(canonicalEvidence(traceIdentity))
       ) {
         reasons.push(`${provider} trace serving identity is not runtime-authenticated for case ${item.caseId}`);
       }

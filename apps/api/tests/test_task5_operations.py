@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -16,6 +20,24 @@ from app.agent.types import AgentEvent
 from app.config import Settings
 
 
+def _principal_header(tenant: str = "tenant-test") -> tuple[bytes, bytes]:
+    now = int(time.time())
+    payload = {
+        "iss": "pali-docs-bff",
+        "aud": "pali-docs-api",
+        "sub": "test-principal",
+        "tenantId": tenant,
+        "iat": now - 1,
+        "exp": now + 60,
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).rstrip(b"=").decode()
+    body = f"v1.{encoded}"
+    signature = hmac.new(b"identity-secret", body.encode(), hashlib.sha256).digest()
+    return b"x-principal", f"{body}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}".encode()
+
+
 def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "PINECONE_API_KEY": "pinecone-key",
@@ -28,6 +50,7 @@ def _settings(**overrides: object) -> Settings:
         "LOCAL_LLM_TIMEOUT_SECONDS": 1,
         "LOCAL_LLM_MAX_OUTPUT_TOKENS": 768,
         "INTERNAL_API_TOKEN": "internal-token",
+        "INTERNAL_PRINCIPAL_SECRET": "identity-secret",
     }
     values.update(overrides)
     return Settings(**values)
@@ -77,6 +100,17 @@ async def test_internal_readiness_requires_bearer_and_returns_pinned_identity(
         "servingRevision": "b968826d9c46dd6066d109eabc6255188de91218",
         "imageDigest": "vllm/vllm-openai@sha256:df2c55e5107afea09ea1a50f9dd96c99ebf97a795334c4d08f691f3d79b2ab12",
         "tokenizer": "Qwen/Qwen3-8B",
+        "tokenizerRevision": "b968826d9c46dd6066d109eabc6255188de91218",
+        "parser": "hermes",
+        "chatTemplate": "qwen3-pinned",
+        "precision": "bfloat16",
+        "servingLimits": {
+            "maxModelLen": 8192,
+            "maxNumSeqs": 4,
+            "maxNumBatchedTokens": 8192,
+            "gpuMemoryUtilization": 0.9,
+            "maxOutputTokens": 768,
+        },
     }
 
 
@@ -144,7 +178,7 @@ async def test_question_response_correlates_request_and_run_without_exposing_mes
             "path": "/v1/question",
             "headers": [
                 (b"x-request-id", b"req-123"),
-                (b"x-access-scope", b'{"tenantId":"tenant-test"}'),
+                _principal_header(),
             ],
         }
     )
@@ -205,7 +239,7 @@ async def test_question_timeout_allocates_sequence_after_queued_prior_event(
                 "type": "http",
                 "method": "POST",
                 "path": "/v1/question",
-                "headers": [(b"x-access-scope", b'{"tenantId":"tenant-test"}')],
+                "headers": [_principal_header()],
             }
         ),
     )
@@ -251,7 +285,7 @@ async def test_question_rejects_empty_access_scope_for_local_provider(
             "type": "http",
             "method": "POST",
             "path": "/v1/question",
-            "headers": [(b"x-access-scope", b"{}")],
+            "headers": [(b"x-principal", b"v1.invalid.invalid")],
         }
     )
     with pytest.raises(HTTPException) as error:

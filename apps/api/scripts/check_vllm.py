@@ -13,7 +13,7 @@ from app.vllm_profile import QWEN3_VLLM_PROFILE, VllmReadinessError, check_vllm_
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Check private vLLM health and the pinned served model identity."
+        description="Check private vLLM health, pinned model identity, and non-thinking completion."
     )
     parser.add_argument(
         "--base-url",

@@ -21,6 +21,14 @@ class VllmProfile:
     enable_auto_tool_choice: bool
     chat_template_kwargs: Mapping[str, bool]
     tensor_parallel_size: int
+    max_model_len: int
+    max_num_seqs: int
+    max_num_batched_tokens: int
+    gpu_memory_utilization: float
+    max_output_tokens: int
+    precision: str
+    chat_template: str
+    cache_roots: tuple[str, ...]
 
 
 QWEN3_VLLM_PROFILE = VllmProfile(
@@ -38,6 +46,19 @@ QWEN3_VLLM_PROFILE = VllmProfile(
     enable_auto_tool_choice=True,
     chat_template_kwargs=MappingProxyType({"enable_thinking": False}),
     tensor_parallel_size=1,
+    max_model_len=8_192,
+    max_num_seqs=4,
+    max_num_batched_tokens=8_192,
+    gpu_memory_utilization=0.9,
+    max_output_tokens=768,
+    precision="bfloat16",
+    chat_template="qwen3-pinned",
+    cache_roots=(
+        "/root/.cache/huggingface",
+        "/root/.cache/vllm",
+        "/root/.cache/torch",
+        "/root/.cache/triton",
+    ),
 )
 
 
@@ -111,6 +132,56 @@ def _get_json(url: str, *, api_key: str | None, timeout: float) -> object:
         raise VllmReadinessError("vLLM readiness endpoint is unavailable") from error
 
 
+def _check_non_thinking_completion(
+    url: str,
+    *,
+    api_key: str,
+    model: str,
+    timeout: float,
+) -> None:
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": "Reply with one word: ready"}],
+            "temperature": 0,
+            "max_tokens": 1,
+            "chat_template_kwargs": dict(QWEN3_VLLM_PROFILE.chat_template_kwargs),
+        }
+    ).encode("utf-8")
+    request = Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                raise VllmReadinessError(
+                    f"vLLM completion readiness returned HTTP {response.status}"
+                )
+            payload = json.load(response)
+    except HTTPError as error:
+        raise VllmReadinessError(
+            f"vLLM completion readiness returned HTTP {error.code}"
+        ) from error
+    except (TimeoutError, URLError, OSError) as error:
+        raise VllmReadinessError("vLLM completion readiness is unavailable") from error
+    except (TypeError, ValueError) as error:
+        raise VllmReadinessError("vLLM completion readiness returned invalid JSON") from error
+    if not isinstance(payload, dict):
+        raise VllmReadinessError("vLLM completion readiness response is invalid")
+    choices = payload.get("choices")
+    message = choices[0].get("message") if isinstance(choices, list) and choices else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise VllmReadinessError("vLLM completion readiness returned no content")
+
+
 def check_vllm_readiness(
     base_url: str,
     *,
@@ -118,7 +189,7 @@ def check_vllm_readiness(
     expected_model: str = QWEN3_VLLM_PROFILE.model_id,
     timeout: float = 2,
 ) -> str:
-    """Check health and exact model identity for the private vLLM endpoint."""
+    """Check health, exact model identity, and a non-thinking completion."""
     normalized_url = _validate_base_url(base_url)
     if not isinstance(api_key, str) or not api_key.strip():
         raise VllmReadinessError("vLLM API key is required")
@@ -133,4 +204,16 @@ def check_vllm_readiness(
         models_url = f"{normalized_url}/v1/models"
     _get_status(health_url, timeout=timeout)
     payload = _get_json(models_url, api_key=api_key, timeout=timeout)
-    return validate_model_identity(payload, expected_model=expected_model)
+    model = validate_model_identity(payload, expected_model=expected_model)
+    completion_url = (
+        f"{normalized_url}/chat/completions"
+        if normalized_url.endswith("/v1")
+        else f"{normalized_url}/v1/chat/completions"
+    )
+    _check_non_thinking_completion(
+        completion_url,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+    )
+    return model

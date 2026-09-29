@@ -196,6 +196,7 @@ beforeEach(() => {
   vi.unstubAllEnvs();
   vi.stubEnv("RAG_BACKEND", "ai-sdk");
   vi.stubEnv("RAG_LANGGRAPH_TRAFFIC_PERCENT", "100");
+  vi.stubEnv("FASTAPI_IDENTITY_SECRET", "identity-secret");
   vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
     "00000000-0000-4000-8000-000000000006",
   );
@@ -305,11 +306,11 @@ describe("POST /api/question", () => {
       "https://fastapi.example.test/v1/question",
       expect.objectContaining({
         method: "POST",
-        headers: {
+        headers: expect.objectContaining({
           "Content-Type": "application/json",
           Authorization: "Bearer backend-token",
-          "X-Access-Scope": JSON.stringify({ tenant: "tenant-a" }),
-        },
+          "X-Principal": expect.stringMatching(/^v1\..+\..+$/),
+        }),
         signal: expect.any(AbortSignal),
       }),
     );
@@ -340,7 +341,7 @@ describe("POST /api/question", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("forwards only the server-authenticated access scope to the LangGraph boundary", async () => {
+  it("forwards only the signed server-authenticated Principal to the LangGraph boundary", async () => {
     vi.stubEnv("RAG_BACKEND", "langgraph");
     vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
     vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
@@ -365,9 +366,10 @@ describe("POST /api/question", () => {
     const fetchOptions = fetchMock.mock.calls[0]?.[1];
     expect(fetchOptions?.headers).toEqual(
       expect.objectContaining({
-        "X-Access-Scope": JSON.stringify({ tenant: "tenant-a" }),
+        "X-Principal": expect.stringMatching(/^v1\..+\..+$/),
       }),
     );
+    expect(fetchOptions?.headers).not.toHaveProperty("X-Access-Scope");
     expect(JSON.parse(String(fetchOptions?.body))).not.toHaveProperty(
       "accessScope",
     );

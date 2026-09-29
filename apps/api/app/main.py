@@ -122,8 +122,19 @@ def internal_readyz(
             "service": "api",
             "model": QWEN3_VLLM_PROFILE.model_id,
             "servingRevision": QWEN3_VLLM_PROFILE.model_revision,
-            "imageDigest": QWEN3_VLLM_PROFILE.image,
             "tokenizer": QWEN3_VLLM_PROFILE.tokenizer_id,
+            "tokenizerRevision": QWEN3_VLLM_PROFILE.tokenizer_revision,
+            "imageDigest": QWEN3_VLLM_PROFILE.image,
+            "parser": QWEN3_VLLM_PROFILE.tool_call_parser,
+            "chatTemplate": QWEN3_VLLM_PROFILE.chat_template,
+            "precision": QWEN3_VLLM_PROFILE.precision,
+            "servingLimits": {
+                "maxModelLen": QWEN3_VLLM_PROFILE.max_model_len,
+                "maxNumSeqs": QWEN3_VLLM_PROFILE.max_num_seqs,
+                "maxNumBatchedTokens": QWEN3_VLLM_PROFILE.max_num_batched_tokens,
+                "gpuMemoryUtilization": QWEN3_VLLM_PROFILE.gpu_memory_utilization,
+                "maxOutputTokens": QWEN3_VLLM_PROFILE.max_output_tokens,
+            },
         },
     )
 
