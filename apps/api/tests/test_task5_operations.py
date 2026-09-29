@@ -253,6 +253,68 @@ async def test_question_timeout_allocates_sequence_after_queued_prior_event(
     assert b'"code":"timeout"' in body
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_stream", [False, True])
+async def test_question_stream_emits_terminal_failure_for_unexpected_runner_error(
+    monkeypatch: pytest.MonkeyPatch,
+    after_stream: bool,
+) -> None:
+    async def no_disconnect(_request: object, _cancellation: object) -> None:
+        return None
+
+    async def run_turn(_turn: object, event_sink: object, _cancellation: object) -> None:
+        if after_stream:
+            await event_sink(
+                AgentEvent(
+                    run_id="stream-error-run",
+                    event_id=str(uuid4()),
+                    sequence=0,
+                    event_type="run.started",
+                    timestamp=datetime.now(timezone.utc),
+                    payload={"runId": "stream-error-run"},
+                )
+            )
+            await event_sink(
+                AgentEvent(
+                    run_id="stream-error-run",
+                    event_id=str(uuid4()),
+                    sequence=1,
+                    event_type="answer.completed",
+                    timestamp=datetime.now(timezone.utc),
+                    payload={"runId": "stream-error-run", "text": "partial"},
+                )
+            )
+        raise RuntimeError("unexpected runner failure")
+
+    monkeypatch.setattr(question_module, "_cancel_on_disconnect", no_disconnect)
+    request = main_module.Request(
+        {"type": "http", "method": "POST", "path": "/v1/question"}
+    )
+    turn = question_module.AgentTurnInput(
+        runId="stream-error-run",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    body = b"".join(
+        [
+            chunk
+            async for chunk in question_module._event_stream(
+                request,
+                SimpleNamespace(run_turn=run_turn),
+                turn,
+            )
+        ]
+    )
+    events = [
+        json.loads(part.removeprefix("data: "))
+        for part in body.decode().strip().split("\n\n")
+    ]
+
+    assert events[-1]["eventType"] == "run.failed"
+    assert events[-1]["payload"]["code"] == "runner_error"
+    if after_stream:
+        assert events[-2]["eventType"] == "answer.completed"
+
+
 def test_question_request_limits_remain_bounded() -> None:
     with pytest.raises(Exception):
         question_module.QuestionRequest.model_validate(

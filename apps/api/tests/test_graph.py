@@ -25,6 +25,7 @@ from app.rag.types import (
     GroundingPassage,
     InsufficientEvidenceBundle,
     RetrievalMetrics,
+    UnavailableBundle,
 )
 
 
@@ -164,6 +165,29 @@ def insufficient_bundle(query: str = "passage") -> InsufficientEvidenceBundle:
         passages=[],
         citations=[],
     )
+
+
+def unavailable_bundle(query: str = "passage") -> UnavailableBundle:
+    return UnavailableBundle(
+        status="unavailable",
+        query=query,
+        corpus_revision="rev-1",
+        error_code="vector_store_unavailable",
+    )
+
+
+@pytest.mark.asyncio
+async def test_retrieval_unavailable_returns_typed_terminal_outcome() -> None:
+    retriever = FakeRetriever([unavailable_bundle()])
+    stages = FakeStages(RetrievalDecision(needsRetrieval=True, query="passage"))
+    events: list[Any] = []
+
+    result = await LangGraphAgentRunner(retriever, stages).run_turn(turn(), events.append)
+
+    assert isinstance(result, TerminalResult)
+    assert result.outcome == "retrieval-unavailable"
+    assert result.code == "vector_store_unavailable"
+    assert events[-1].event_type == "run.completed"
 
 
 @pytest.mark.asyncio
@@ -351,3 +375,35 @@ async def test_runner_cancellation_during_retrieval_preserves_scope_and_outcome(
         "run.failed",
     ]
     assert events[-1].payload["code"] == "aborted"
+
+
+@pytest.mark.asyncio
+async def test_runner_cancellation_during_local_generation_cancels_model_call() -> None:
+    cancellation = asyncio.Event()
+    generation_started = asyncio.Event()
+    model_cancelled = False
+
+    class BlockingStages(FakeStages):
+        async def direct_answer(self, _input: AgentTurnInput) -> DirectAnswer:
+            nonlocal model_cancelled
+            generation_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                model_cancelled = True
+                raise
+            raise AssertionError("unreachable")
+
+    runner_task = asyncio.create_task(
+        LangGraphAgentRunner(
+            FakeRetriever([grounded_bundle()]),
+            BlockingStages(RetrievalDecision(needsRetrieval=False, query="greeting")),
+        ).run_turn(turn("cancelled-generation"), cancellation=cancellation)
+    )
+    await generation_started.wait()
+    cancellation.set()
+    result = await runner_task
+
+    assert isinstance(result, TerminalResult)
+    assert result.code == "aborted"
+    assert model_cancelled

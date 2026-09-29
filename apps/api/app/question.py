@@ -126,21 +126,29 @@ def _sse(event: AgentEvent) -> bytes:
     return f"data: {json.dumps(event.as_dict(), separators=(',', ':'))}\n\n".encode("utf-8")
 
 
-def _timeout_event(run_id: str, sequence: int) -> AgentEvent:
+def _failure_event(run_id: str, sequence: int, code: str) -> AgentEvent:
     return AgentEvent(
         run_id=run_id,
         event_id=str(uuid4()),
         sequence=sequence,
         event_type="run.failed",
         timestamp=datetime.now(timezone.utc),
-        payload={"runId": run_id, "code": "timeout"},
+        payload={"runId": run_id, "code": code},
     )
+
+
+def _timeout_event(run_id: str, sequence: int) -> AgentEvent:
+    return _failure_event(run_id, sequence, "timeout")
 
 
 class _TimeoutMarker:
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
 
+
+class _RunnerFailureMarker:
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
 
 async def _cancel_on_disconnect(request: Request, cancellation: asyncio.Event) -> None:
     try:
@@ -167,16 +175,25 @@ async def _event_stream(
     _ = request_id or getattr(request.state, "request_id", str(uuid4()))
     provider = getattr(request.state, "provider", provider)
     timeout_seconds = getattr(request.state, "timeout_seconds", timeout_seconds)
-    queue: asyncio.Queue[AgentEvent | _TimeoutMarker | None] = asyncio.Queue()
+    queue: asyncio.Queue[AgentEvent | _TimeoutMarker | _RunnerFailureMarker | None] = asyncio.Queue()
     cancellation = asyncio.Event()
     next_sequence = 0
+    emitted_terminal = False
 
     async def emit(event: AgentEvent) -> None:
+        nonlocal emitted_terminal
+        if event.event_type in {"run.completed", "run.failed"}:
+            emitted_terminal = True
         await queue.put(event)
 
     async def run() -> None:
         try:
-            result = await runner.run_turn(turn, emit, cancellation)
+            await runner.run_turn(turn, emit, cancellation)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if not emitted_terminal and not cancellation.is_set():
+                await queue.put(_RunnerFailureMarker(turn.run_id))
         finally:
             await queue.put(None)
 
@@ -201,7 +218,12 @@ async def _event_stream(
                 break
             if terminal_seen:
                 continue
-            event = _timeout_event(item.run_id, next_sequence) if isinstance(item, _TimeoutMarker) else item
+            if isinstance(item, _TimeoutMarker):
+                event = _timeout_event(item.run_id, next_sequence)
+            elif isinstance(item, _RunnerFailureMarker):
+                event = _failure_event(item.run_id, next_sequence, "runner_error")
+            else:
+                event = item
             next_sequence = max(next_sequence, event.sequence + 1)
             yield _sse(event)
             if event.event_type in {"run.completed", "run.failed"}:
