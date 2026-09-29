@@ -116,6 +116,7 @@ async def test_question_endpoint_maps_bounded_request_to_runner(
         if False:
             yield b""
 
+    monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
     monkeypatch.setattr(question_module, "_authenticated_access_scope", lambda *_args: {"tenant": "tenant-test"})
     monkeypatch.setattr(question_module, "get_settings", lambda: object())
     monkeypatch.setattr(
@@ -151,6 +152,11 @@ async def test_question_endpoint_generates_run_id_for_valid_request(monkeypatch:
             yield b""
 
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
+    monkeypatch.setattr(
+        question_module,
+        "get_settings",
+        lambda: SimpleNamespace(PROVIDER_NAME="openrouter"),
+    )
     monkeypatch.setattr(question_module, "_authenticated_access_scope", lambda *_args: {"tenant": "tenant-test"})
     monkeypatch.setattr(
         question_module,
