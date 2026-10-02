@@ -150,29 +150,24 @@ def match(
 
 
 @pytest.mark.asyncio
-async def test_retriever_discards_untrusted_metadata_and_scores() -> None:
+async def test_retriever_discards_untrusted_metadata() -> None:
     valid = match("valid")
-    malformed_metadata = {"text": "missing source", "title": "Chapter 1", "corpusRevision": "rev-1"}
+    malformed_metadata = {
+        "text": "missing source",
+        "title": "Chapter 1",
+        "corpusRevision": "rev-1",
+    }
     matches = [
         valid,
         match("stale", revision="old-revision"),
         match("missing", metadata=malformed_metadata),
-        match("nan", score=float("nan")),
-        match("infinite", score=float("inf")),
-        match("negative-infinite", score=float("-inf")),
-        match("bool", score=True),
-        match("string", score="0.9"),
-        match("overflow", score=10**10_000),
     ]
-
     retriever = PineconeRetriever(
         settings=settings(),
         embedder=lambda query: [len(query)],
         query_fn=lambda *_args: {"matches": matches},
     )
-
     result = await retriever.retrieve("  valid query  ", attempt=1)
-
     assert isinstance(result, GroundedBundle)
     assert [passage.id for passage in result.passages] == ["valid"]
     assert [citation.id for citation in result.citations] == ["valid"]
@@ -248,6 +243,21 @@ async def test_retriever_returns_unavailable_when_all_scores_are_malformed() -> 
     assert isinstance(result, UnavailableBundle)
     assert result.status == "unavailable"
     assert result.error_code == "vector_store_unavailable"
+@pytest.mark.asyncio
+async def test_retriever_rejects_mixed_valid_and_malformed_scores() -> None:
+    retriever = PineconeRetriever(
+        settings=settings(),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [match("valid"), match("bad", score=float("nan"))]
+        },
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, UnavailableBundle)
+    assert result.error_code == "vector_store_unavailable"
+
 
 
 @pytest.mark.asyncio

@@ -499,7 +499,7 @@ class PineconeRetriever:
                     parent_text=parent_text,
                 )
             )
-        if malformed_score and not passages:
+        if malformed_score:
             raise RetrievalIntegrityError("Pinecone returned malformed scores")
         return passages
 

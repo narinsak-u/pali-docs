@@ -91,7 +91,7 @@ export async function queryPinecone(
     ];
   });
 
-  if (malformedScore && passages.length === 0) {
+  if (malformedScore) {
     throw new Error("Pinecone returned malformed scores");
   }
   return passages;
