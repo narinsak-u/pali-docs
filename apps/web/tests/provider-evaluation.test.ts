@@ -4,9 +4,11 @@ import type {
   AgentTurnRunner,
 } from "@/lib/agent/types";
 import {
+  assertReviewedCasesArtifactReady,
   attestProductionBaseline,
   compareProviderEvaluations,
   decidePromotion,
+  parseProductionBaselineArtifact,
   runPairedEvaluationCase,
   type EvaluationCase,
   type EvaluationThresholds,
@@ -43,6 +45,78 @@ const thresholds: EvaluationThresholds = {
   maxToolFailureRate: 0,
   maxCost: 1,
 };
+
+function productionBaselineFixture() {
+  return {
+    artifactType: "ProductionBaseline",
+    schemaVersion: 1,
+    authoritative: true,
+    sourceIssue: 42,
+    artifactId: "baseline-2026-09-01",
+    corpusRevision: "corpus-1",
+    attestation: "attested-baseline",
+    provider: "hosted",
+    thresholds,
+  };
+}
+
+describe("artifact readiness gates", () => {
+  it("rejects reviewed cases missing authoritative source mappings", () => {
+    expect(() =>
+      assertReviewedCasesArtifactReady({
+        artifactType: "ReviewedEvaluationCases",
+        schemaVersion: 1,
+        authoritative: true,
+        corpusRevision: "corpus-1",
+        cases: [{ ...evaluationCase, expectedSourceIds: [] }],
+      }),
+    ).toThrow("missing authoritative source mappings");
+  });
+
+  it("rejects reviewed cases with incomplete required cohorts", () => {
+    expect(() =>
+      assertReviewedCasesArtifactReady({
+        artifactType: "ReviewedEvaluationCases",
+        schemaVersion: 1,
+        authoritative: true,
+        corpusRevision: "corpus-1",
+        cases: [evaluationCase],
+      }),
+    ).toThrow("reviewed cohort thai-single-source is incomplete");
+  });
+
+  it("rejects a ProductionBaseline missing attestation", () => {
+    const { attestation: _attestation, ...withoutAttestation } = productionBaselineFixture();
+    expect(() => parseProductionBaselineArtifact(withoutAttestation)).toThrow();
+  });
+
+  it("rejects a ProductionBaseline with the wrong source issue", () => {
+    expect(() =>
+      parseProductionBaselineArtifact({
+        ...productionBaselineFixture(),
+        sourceIssue: 41,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a ProductionBaseline with the wrong provider", () => {
+    expect(() =>
+      parseProductionBaselineArtifact({
+        ...productionBaselineFixture(),
+        provider: "local",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a ProductionBaseline with unknown fields", () => {
+    expect(() =>
+      parseProductionBaselineArtifact({
+        ...productionBaselineFixture(),
+        unexpected: true,
+      }),
+    ).toThrow();
+  });
+});
 
 function runnerFor(
   answer: string,
