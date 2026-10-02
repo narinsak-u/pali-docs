@@ -30,6 +30,13 @@ export async function queryPinecone(
 
   let malformedScore = false;
   const passages = results.matches.flatMap((match): GroundingPassage[] => {
+    if (
+      typeof match.score !== "number" ||
+      !Number.isFinite(match.score)
+    ) {
+      malformedScore = true;
+      return [];
+    }
     const metadata = match.metadata;
     const source = isNonEmptyString(metadata?.source) ? metadata.source : undefined;
     const sourceVersion = isNonEmptyString(metadata?.sourceVersion)
@@ -68,13 +75,6 @@ export async function queryPinecone(
       return [];
     }
 
-    if (
-      typeof match.score !== "number" ||
-      !Number.isFinite(match.score)
-    ) {
-      malformedScore = true;
-      return [];
-    }
 
     return [
       {

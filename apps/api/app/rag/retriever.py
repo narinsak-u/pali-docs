@@ -439,6 +439,19 @@ class PineconeRetriever:
         passages: list[GroundingPassage] = []
         malformed_score = False
         for match in self._matches(result):
+            score = _value(match, "score")
+            if isinstance(score, bool) or not isinstance(score, Real):
+                malformed_score = True
+                continue
+            try:
+                score_float = float(score)
+            except (OverflowError, TypeError, ValueError):
+                malformed_score = True
+                continue
+            if not math.isfinite(score_float):
+                malformed_score = True
+                continue
+
             match_id = _non_empty_string(_value(match, "id"))
             metadata = _value(match, "metadata")
             if not isinstance(metadata, Mapping) or match_id is None:
@@ -475,18 +488,6 @@ class PineconeRetriever:
             if parent_text is not None:
                 parent_text = parent_text[:max_parent_context_chars]
 
-            score = _value(match, "score")
-            if isinstance(score, bool) or not isinstance(score, Real):
-                malformed_score = True
-                continue
-            try:
-                score_float = float(score)
-            except (OverflowError, TypeError, ValueError):
-                malformed_score = True
-                continue
-            if not math.isfinite(score_float):
-                malformed_score = True
-                continue
 
             passages.append(
                 GroundingPassage(

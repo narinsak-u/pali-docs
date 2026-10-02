@@ -257,6 +257,42 @@ async def test_retriever_rejects_mixed_valid_and_malformed_scores() -> None:
 
     assert isinstance(result, UnavailableBundle)
     assert result.error_code == "vector_store_unavailable"
+@pytest.mark.asyncio
+async def test_retriever_rejects_malformed_scores_before_metadata_and_scope_filtering() -> None:
+    valid = match("valid")
+    valid["metadata"]["tenant"] = "tenant-a"  # type: ignore[index]
+    stale = match("stale", score=float("nan"), revision="old-revision")
+    missing = match(
+        "missing",
+        score=float("nan"),
+        metadata={
+            "text": "missing source version",
+            "source": "book-1",
+            "title": "Chapter 1",
+            "corpusRevision": "rev-1",
+            "tenant": "tenant-a",
+        },
+    )
+    forged = match("forged", score=float("nan"))
+    forged["metadata"]["sourceId"] = "other-source"  # type: ignore[index]
+    out_of_scope = match("out-of-scope", score=float("nan"))
+    out_of_scope["metadata"]["tenant"] = "tenant-b"  # type: ignore[index]
+
+    retriever = PineconeRetriever(
+        settings=settings(),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {
+            "matches": [valid, stale, missing, forged, out_of_scope]
+        },
+    )
+
+    result = await retriever.retrieve(
+        "query", attempt=1, access_scope={"tenant": "tenant-a"}
+    )
+
+    assert isinstance(result, UnavailableBundle)
+    assert result.error_code == "vector_store_unavailable"
+
 
 
 
