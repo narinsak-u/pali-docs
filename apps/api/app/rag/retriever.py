@@ -114,6 +114,15 @@ def _without_parent_context(passage: GroundingPassage) -> GroundingPassage:
         return passage
     return replace(passage, text=passage.text[len(prefix) :])
 
+def _has_complete_parent_identity(passage: GroundingPassage) -> bool:
+    return (
+        passage.parent_id is not None
+        and passage.parent_text is not None
+        and bool(passage.parent_text.strip())
+        and passage.section is not None
+        and passage.source_version is not None
+    )
+
 def _expand_by_parent(
     passages: list[GroundingPassage], max_parent_context_chars: int
 ) -> list[GroundingPassage]:
@@ -122,13 +131,9 @@ def _expand_by_parent(
         list[GroundingPassage],
     ] = {}
     for passage in passages:
-        if (
-            passage.parent_id is None
-            or passage.parent_text is None
-            or passage.section is None
-            or passage.source_version is None
-        ):
+        if not _has_complete_parent_identity(passage):
             continue
+
         key = (
             passage.source,
             passage.source_version,
@@ -141,14 +146,11 @@ def _expand_by_parent(
     expanded: list[GroundingPassage] = []
     seen_parents: set[tuple[str, str | None, str | None, str, str]] = set()
     for passage in passages:
-        if (
-            passage.parent_id is None
-            or passage.parent_text is None
-            or passage.section is None
-            or passage.source_version is None
-        ):
+        if not _has_complete_parent_identity(passage):
             expanded.append(passage)
             continue
+
+
         key = (
             passage.source,
             passage.source_version,

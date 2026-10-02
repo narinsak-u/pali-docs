@@ -176,6 +176,53 @@ describe("retrieve", () => {
       "section context",
     );
   });
+  it("does not collapse siblings when parent context is empty", async () => {
+    Object.assign(mockedConfig, {
+      RAG_HIERARCHY_EXPANSION: true,
+      RAG_ACCEPTED_TOP_K: 4,
+    });
+    mockedQuery.mockResolvedValue([
+      passage("child-a", 0.9, {
+        source: "part-1/guide",
+        sourceVersion: "source-version-1",
+        section: "section-1",
+        parentId: "parent-1",
+        parentText: "",
+      }),
+      passage("child-b", 0.8, {
+        source: "part-1/guide",
+        sourceVersion: "source-version-1",
+        section: "section-1",
+        parentId: "parent-1",
+        parentText: "",
+      }),
+      passage("child-without-parent-text", 0.78, {
+        source: "part-1/guide",
+        sourceVersion: "source-version-1",
+        section: "section-1",
+        parentId: "parent-1",
+      }),
+      passage("unrelated", 0.75, {
+        source: "part-1/guide",
+        sourceVersion: "source-version-1",
+        section: "section-1",
+        parentId: "parent-2",
+        parentText: "other context",
+      }),
+    ]);
+
+    const result = await retrieve({ query: "query", attempt: 1 });
+
+    expect(result.status === "grounded" && result.passages.map(({ id }) => id)).toEqual([
+      "child-a",
+      "child-b",
+      "child-without-parent-text",
+      "unrelated",
+    ]);
+    expect(result.status === "grounded" && result.context).toContain(
+      "other context",
+    );
+  });
 
   it("keeps a flat child when hierarchy metadata is unavailable", async () => {
     Object.assign(mockedConfig, {

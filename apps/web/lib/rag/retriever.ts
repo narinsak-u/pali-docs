@@ -85,20 +85,26 @@ function withoutParentContext(passage: GroundingPassage): GroundingPassage {
   };
 }
 
+function hasCompleteParentIdentity(passage: GroundingPassage): boolean {
+  return (
+    passage.parentId !== undefined &&
+    passage.parentText !== undefined &&
+    passage.parentText.trim().length > 0 &&
+    passage.section !== undefined &&
+    passage.sourceVersion !== undefined
+  );
+}
+
 function expandByParent(
   passages: GroundingPassage[],
   maxParentContextChars: number,
 ): GroundingPassage[] {
   const groups = new Map<string, GroundingPassage[]>();
   for (const passage of passages) {
-    if (
-      passage.parentId === undefined ||
-      passage.parentText === undefined ||
-      passage.section === undefined ||
-      passage.sourceVersion === undefined
-    ) {
+    if (!hasCompleteParentIdentity(passage)) {
       continue;
     }
+
     const key = [
       passage.source,
       passage.sourceVersion,
@@ -114,14 +120,11 @@ function expandByParent(
   const expanded: GroundingPassage[] = [];
   const seenParents = new Set<string>();
   for (const passage of passages) {
-    if (
-      passage.parentId === undefined ||
-      passage.section === undefined ||
-      passage.sourceVersion === undefined
-    ) {
+    if (!hasCompleteParentIdentity(passage)) {
       expanded.push(passage);
       continue;
     }
+
     const key = [
       passage.source,
       passage.sourceVersion,

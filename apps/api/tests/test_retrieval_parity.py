@@ -81,6 +81,73 @@ async def test_shared_fixture_expands_bounded_hierarchy_and_projects_child_citat
 
 
 @pytest.mark.asyncio
+async def test_empty_parent_text_is_normalized_before_hierarchy_expansion() -> None:
+    matches = [
+        {
+            "id": "child-a",
+            "score": 0.9,
+            "metadata": {
+                "text": "child a",
+                "source": "part-1/guide",
+                "sourceVersion": "source-version-1",
+                "section": "section-1",
+                "parentId": "parent-1",
+                "parentText": "",
+                "title": "Guide",
+                "corpusRevision": FIXTURE["corpusRevision"],
+            },
+        },
+        {
+            "id": "child-b",
+            "score": 0.8,
+            "metadata": {
+                "text": "child b",
+                "source": "part-1/guide",
+                "sourceVersion": "source-version-1",
+                "section": "section-1",
+                "parentId": "parent-1",
+                "parentText": "",
+                "title": "Guide",
+                "corpusRevision": FIXTURE["corpusRevision"],
+            },
+        },
+        {
+            "id": "unrelated",
+            "score": 0.75,
+            "metadata": {
+                "text": "unrelated child",
+                "source": "part-1/guide",
+                "sourceVersion": "source-version-1",
+                "section": "section-1",
+                "parentId": "parent-2",
+                "parentText": "other context",
+                "title": "Guide",
+                "corpusRevision": FIXTURE["corpusRevision"],
+            },
+        },
+    ]
+    retriever = PineconeRetriever(
+        settings(
+            RAG_HIERARCHY_EXPANSION=True,
+            RAG_ACCEPTED_TOP_K=3,
+        ),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": matches},
+    )
+
+    result = await retriever.retrieve("parity", attempt=1)
+
+    assert result.status == "grounded"
+    assert [passage.id for passage in result.passages] == [
+        "child-a",
+        "child-b",
+        "unrelated",
+    ]
+    assert result.passages[0].parent_text is None
+    assert "other context" in result.context
+
+
+@pytest.mark.asyncio
 async def test_shared_fixture_preserves_dense_suffix_after_prefix_reranking() -> None:
     def rerank(_query: str, candidates: list[GroundingPassage], _max: int) -> list[GroundingPassage]:
         return [candidates[1], candidates[0]]
