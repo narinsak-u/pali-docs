@@ -235,3 +235,18 @@ bunx vitest run tests/route.test.ts
 - [Next.js Docs](https://nextjs.org/docs) — framework fundamentals
 - [Learn Next.js](https://nextjs.org/learn) — interactive tutorial
 - [Fumadocs](https://fumadocs.vercel.app) — documentation framework
+
+## Private web and API containers
+
+Build the web and API independently with `docker build -f apps/web/Dockerfile .` and `docker build -f apps/api/Dockerfile apps/api`. Start the Compose deployment on the host with:
+
+```bash
+cp deploy/web.env.example deploy/web.env
+cp deploy/api.env.example deploy/api.env
+# Replace every placeholder with operator-provided runtime values first.
+docker compose -f deploy/compose.yml up -d --build
+```
+
+The web is published only on `127.0.0.1:3000`; FastAPI has no host port and is reachable only on Compose's private network. There is no Tailscale ingress or vLLM container in this deployment slice. Compose reports web/API liveness independently; API readiness is available on the private network at `/readyz`. `deploy/compose-smoke.sh` exercises the live web page and API liveness/readiness when runtime configuration is present. Local staging readiness requires a configured provider and its runtime credentials.
+
+Keep `deploy/web.env` and `deploy/api.env` outside source control. These are runtime-only settings, not Docker build arguments; public `NEXT_PUBLIC_*` variables must never contain credentials.
