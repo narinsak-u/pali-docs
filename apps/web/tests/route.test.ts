@@ -197,6 +197,8 @@ beforeEach(() => {
   vi.stubEnv("RAG_BACKEND", "ai-sdk");
   vi.stubEnv("RAG_LANGGRAPH_TRAFFIC_PERCENT", "100");
   vi.stubEnv("FASTAPI_IDENTITY_SECRET", "identity-secret");
+  vi.stubEnv("PILOT_TENANT_ID", "pilot-tenant");
+  vi.stubEnv("PILOT_PRINCIPAL_ID", "pilot-principal");
   vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
     "00000000-0000-4000-8000-000000000006",
   );
