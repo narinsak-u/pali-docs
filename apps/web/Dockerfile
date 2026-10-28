@@ -2,6 +2,7 @@ FROM oven/bun:1.4.0 AS build
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY apps/web/package.json apps/web/package.json
+COPY apps/web/source.config.ts apps/web/source.config.ts
 RUN bun install --frozen-lockfile
 COPY apps/web apps/web
 WORKDIR /app/apps/web

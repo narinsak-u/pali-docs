@@ -211,6 +211,87 @@ describe("queryPinecone", () => {
       "Pinecone returned malformed scores",
     );
   });
+  it("rejects any response containing a malformed score", async () => {
+    const validMatch = {
+      id: "valid",
+      score: 0.9,
+      metadata: {
+        text: "valid text",
+        source: "part-1/chapter-1",
+        sourceVersion: "source-version-a",
+        title: "บทที่ 1",
+        corpusRevision: "corpus-2026-09-18",
+      },
+    };
+    const malformedMatch = {
+      ...validMatch,
+      id: "malformed",
+      score: Number.NaN,
+    };
+    mockedNamespace.mockReturnValue({
+      query: vi.fn().mockResolvedValue({ matches: [validMatch, malformedMatch] }),
+    });
+
+    await expect(queryPinecone([0.1], 5)).rejects.toThrow(
+      "Pinecone returned malformed scores",
+    );
+  });
+  it("rejects malformed scores before metadata and scope filtering", async () => {
+    const baseMetadata = {
+      text: "valid text",
+      source: "part-1/chapter-1",
+      sourceVersion: "source-version-a",
+      title: "บทที่ 1",
+      corpusRevision: "corpus-2026-09-18",
+    };
+    const validMatch = {
+      id: "valid",
+      score: 0.9,
+      metadata: { ...baseMetadata, tenant: "tenant-a" },
+    };
+    const malformedMatches = [
+      {
+        ...validMatch,
+        id: "stale",
+        score: Number.NaN,
+        metadata: { ...baseMetadata, corpusRevision: "old-revision" },
+      },
+      {
+        ...validMatch,
+        id: "missing",
+        score: Number.NaN,
+        metadata: {
+          text: "missing source version",
+          source: baseMetadata.source,
+          title: baseMetadata.title,
+          corpusRevision: baseMetadata.corpusRevision,
+        },
+      },
+      {
+        ...validMatch,
+        id: "forged",
+        score: Number.NaN,
+        metadata: { ...baseMetadata, sourceId: "other-source" },
+      },
+      {
+        ...validMatch,
+        id: "out-of-scope",
+        score: Number.NaN,
+        metadata: { ...baseMetadata, tenant: "tenant-b" },
+      },
+    ];
+    mockedNamespace.mockReturnValue({
+      query: vi.fn().mockResolvedValue({
+        matches: [validMatch, ...malformedMatches],
+      }),
+    });
+
+    await expect(
+      queryPinecone([0.1], 5, undefined, { tenant: "tenant-a" }),
+    ).rejects.toThrow("Pinecone returned malformed scores");
+  });
+
+
 
 
   it("drops missing, stale, and mixed corpus revisions while retaining matching records", async () => {

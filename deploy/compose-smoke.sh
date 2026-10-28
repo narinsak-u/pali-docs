@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-compose=(docker compose -f deploy/compose.yml)
+compose=(docker compose --env-file deploy/vllm/.env -f deploy/compose.yml)
 response=$(mktemp)
 trap 'rm -f "$response"; if [[ "${KEEP_DEPLOYMENT:-0}" != 1 ]]; then "${compose[@]}" down; fi' EXIT
 

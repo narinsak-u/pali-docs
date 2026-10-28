@@ -29,7 +29,8 @@ def _principal_token(subject: str = "principal-1", tenant: str = "tenant-1") -> 
     now = int(time.time())
     payload = json.dumps({
         "iss": "pali-docs-bff", "aud": "pali-docs-api", "sub": subject,
-        "tenantId": tenant, "roles": ["admin"], "documentIds": ["all"],
+        "tenantId": tenant, "roles": ["admin"], "permissions": ["document:read"],
+        "documentIds": ["all"], "visibility": "private",
         "iat": now - 1, "exp": now + 60,
     }, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
@@ -159,7 +160,13 @@ async def test_question_endpoint_passes_only_configured_pilot_scope_to_runner(
     )
     _ = [chunk async for chunk in response.body_iterator]
 
-    assert captured["turn"].access_scope == {"tenant": "tenant-1"}
+    assert captured["turn"].access_scope == {
+        "tenant": "tenant-1",
+        "roles": ["admin"],
+        "permissions": ["document:read"],
+        "documentIds": ["all"],
+        "visibility": "private",
+    }
 @pytest.mark.asyncio
 async def test_question_endpoint_rejects_mismatched_corpus_revision_before_runner(
     monkeypatch: pytest.MonkeyPatch,
@@ -171,11 +178,17 @@ async def test_question_endpoint_rejects_mismatched_corpus_revision_before_runne
         runner_created = True
         return object()
 
+    monkeypatch.setenv("INTERNAL_PRINCIPAL_SECRET", "identity-secret")
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
     monkeypatch.setattr(
         question_module,
         "get_settings",
-        lambda: SimpleNamespace(PINECONE_CORPUS_REVISION="corpus-1"),
+        lambda: SimpleNamespace(
+            PINECONE_CORPUS_REVISION="corpus-1",
+            INTERNAL_PRINCIPAL_SECRET="identity-secret",
+            PILOT_TENANT_ID="tenant-1",
+            PILOT_PRINCIPAL_ID="principal-1",
+        ),
     )
     monkeypatch.setattr(question_module, "create_langgraph_agent_turn_runner", create_runner)
 
@@ -183,7 +196,12 @@ async def test_question_endpoint_rejects_mismatched_corpus_revision_before_runne
     payload["corpusRevision"] = "corpus-2"
     request = QuestionRequest.model_validate(payload)
     http_request = Request(
-        {"type": "http", "method": "POST", "path": "/v1/question", "headers": []}
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/question",
+            "headers": [(b"x-principal", _principal_token().encode())],
+        }
     )
 
     with pytest.raises(HTTPException) as error:
