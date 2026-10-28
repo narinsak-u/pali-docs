@@ -371,10 +371,7 @@ async def question(
         configured_provider = getattr(settings, "PROVIDER_NAME", "openrouter")
         provider = selected_provider(settings)
         access_scope = _authenticated_access_scope(request, settings)
-        if payload.corpus_revision is not None and (
-            not settings.PINECONE_CORPUS_REVISION
-            or payload.corpus_revision != settings.PINECONE_CORPUS_REVISION
-        ):
+        if payload.corpus_revision is not None and payload.corpus_revision != settings.PINECONE_CORPUS_REVISION:
             raise _internal_error(400, "invalid_request", "Invalid request")
         if not access_scope:
             raise _internal_error(401, "unauthorized", "Authenticated access scope is required")

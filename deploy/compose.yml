@@ -27,91 +27,15 @@ services:
       - ${API_ENV_FILE:-api.env}
     expose:
       - "8000"
-    depends_on:
-      vllm:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
       interval: 15s
+      timeout: 5s
       retries: 3
       start_period: 20s
-    networks: [services, model]
-    restart: unless-stopped
-
-  vllm:
-    image: vllm/vllm-openai@sha256:df2c55e5107afea09ea1a50f9dd96c99ebf97a795334c4d08f691f3d79b2ab12
-    command:
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --model
-      - Qwen/Qwen3-8B
-      - --revision
-      - b968826d9c46dd6066d109eabc6255188de91218
-      - --tokenizer
-      - Qwen/Qwen3-8B
-      - --tokenizer-revision
-      - b968826d9c46dd6066d109eabc6255188de91218
-      - --served-model-name
-      - Qwen/Qwen3-8B
-      - --reasoning-parser
-      - qwen3
-      - --enable-auto-tool-choice
-      - --tool-call-parser
-      - hermes
-      - --tensor-parallel-size
-      - "1"
-      - --max-model-len
-      - "8192"
-      - --max-num-seqs
-      - "4"
-      - --max-num-batched-tokens
-      - "8192"
-      - --gpu-memory-utilization
-      - "0.9"
-      - --dtype
-      - bfloat16
-      - --api-key
-      - ${VLLM_API_KEY:?VLLM_API_KEY must be set}
-    environment:
-      HF_HOME: /root/.cache/huggingface
-      VLLM_CACHE_ROOT: /root/.cache/vllm
-      TORCHINDUCTOR_CACHE_DIR: /root/.cache/torch
-      TRITON_CACHE_DIR: /root/.cache/triton
-      HF_TOKEN: ${HF_TOKEN:-}
-    expose:
-      - "8000"
-    shm_size: "16gb"
-    volumes:
-      - vllm-model-cache:/root/.cache/huggingface
-      - vllm-compile-cache:/root/.cache/vllm
-      - torch-compile-cache:/root/.cache/torch
-      - triton-cache:/root/.cache/triton
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 90s
-    networks: [model]
+    networks: [services]
     restart: unless-stopped
 
 networks:
   services:
     driver: bridge
-  model:
-    driver: bridge
-
-volumes:
-  vllm-model-cache:
-  vllm-compile-cache:
-  torch-compile-cache:
-  triton-cache:

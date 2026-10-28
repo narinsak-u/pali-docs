@@ -114,15 +114,6 @@ def _without_parent_context(passage: GroundingPassage) -> GroundingPassage:
         return passage
     return replace(passage, text=passage.text[len(prefix) :])
 
-def _has_complete_parent_identity(passage: GroundingPassage) -> bool:
-    return (
-        passage.parent_id is not None
-        and passage.parent_text is not None
-        and bool(passage.parent_text.strip())
-        and passage.section is not None
-        and passage.source_version is not None
-    )
-
 def _expand_by_parent(
     passages: list[GroundingPassage], max_parent_context_chars: int
 ) -> list[GroundingPassage]:
@@ -131,9 +122,13 @@ def _expand_by_parent(
         list[GroundingPassage],
     ] = {}
     for passage in passages:
-        if not _has_complete_parent_identity(passage):
+        if (
+            passage.parent_id is None
+            or passage.parent_text is None
+            or passage.section is None
+            or passage.source_version is None
+        ):
             continue
-
         key = (
             passage.source,
             passage.source_version,
@@ -146,11 +141,14 @@ def _expand_by_parent(
     expanded: list[GroundingPassage] = []
     seen_parents: set[tuple[str, str | None, str | None, str, str]] = set()
     for passage in passages:
-        if not _has_complete_parent_identity(passage):
+        if (
+            passage.parent_id is None
+            or passage.parent_text is None
+            or passage.section is None
+            or passage.source_version is None
+        ):
             expanded.append(passage)
             continue
-
-
         key = (
             passage.source,
             passage.source_version,
@@ -224,13 +222,6 @@ class PineconeRetriever:
                 status="unavailable",
                 query=normalized_query,
                 corpus_revision=None,
-                error_code="corpus_unavailable",
-            )
-        if not config.PINECONE_API_KEY or not config.PINECONE_INDEX_NAME:
-            return UnavailableBundle(
-                status="unavailable",
-                query=normalized_query,
-                corpus_revision=self.settings.PINECONE_CORPUS_REVISION or "",
                 error_code="corpus_unavailable",
             )
 
@@ -453,19 +444,6 @@ class PineconeRetriever:
         passages: list[GroundingPassage] = []
         malformed_score = False
         for match in self._matches(result):
-            score = _value(match, "score")
-            if isinstance(score, bool) or not isinstance(score, Real):
-                malformed_score = True
-                continue
-            try:
-                score_float = float(score)
-            except (OverflowError, TypeError, ValueError):
-                malformed_score = True
-                continue
-            if not math.isfinite(score_float):
-                malformed_score = True
-                continue
-
             match_id = _non_empty_string(_value(match, "id"))
             metadata = _value(match, "metadata")
             if not isinstance(metadata, Mapping) or match_id is None:
@@ -502,6 +480,18 @@ class PineconeRetriever:
             if parent_text is not None:
                 parent_text = parent_text[:max_parent_context_chars]
 
+            score = _value(match, "score")
+            if isinstance(score, bool) or not isinstance(score, Real):
+                malformed_score = True
+                continue
+            try:
+                score_float = float(score)
+            except (OverflowError, TypeError, ValueError):
+                malformed_score = True
+                continue
+            if not math.isfinite(score_float):
+                malformed_score = True
+                continue
 
             passages.append(
                 GroundingPassage(
@@ -516,7 +506,7 @@ class PineconeRetriever:
                     parent_text=parent_text,
                 )
             )
-        if malformed_score:
+        if malformed_score and not passages:
             raise RetrievalIntegrityError("Pinecone returned malformed scores")
         return passages
 

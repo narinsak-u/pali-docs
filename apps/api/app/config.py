@@ -75,10 +75,10 @@ class Settings(BaseSettings):
     LOCAL_LLM_MAX_INFLIGHT: int = Field(default=1, ge=1, le=4)
     LOCAL_LLM_RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=600)
 
-    PINECONE_API_KEY: str | None = None
-    PINECONE_INDEX_NAME: str | None = None
+    PINECONE_API_KEY: str = Field(min_length=1)
+    PINECONE_INDEX_NAME: str = Field(min_length=1)
     PINECONE_NAMESPACE: str = ""
-    PINECONE_CORPUS_REVISION: str | None = None
+    PINECONE_CORPUS_REVISION: str = Field(min_length=1)
     PINECONE_EMBEDDING_MODEL: str = "llama-text-embed-v2"
 
     RAG_CANDIDATE_TOP_K: int = Field(default=20, ge=1, le=50)

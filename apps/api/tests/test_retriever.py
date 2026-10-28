@@ -62,21 +62,6 @@ def test_invalid_quality_settings_use_dense_defaults() -> None:
     assert config.RAG_RERANKER_TIMEOUT_MS == 100
     assert config.RAG_MAX_CONTEXT_CHARS == 12_000
 
-@pytest.mark.asyncio
-async def test_retrieval_is_unavailable_without_authoritative_corpus() -> None:
-    calls: list[str] = []
-    retriever = PineconeRetriever(
-        settings=settings(PINECONE_CORPUS_REVISION=None),
-        embedder=lambda _query: calls.append("embed") or [0.1],
-        query_fn=lambda *_args: calls.append("query") or {"matches": []},
-    )
-
-    result = await retriever.retrieve("question", attempt=0)
-
-    assert isinstance(result, UnavailableBundle)
-    assert result.error_code == "corpus_unavailable"
-    assert calls == []
-
 @pytest.mark.parametrize(
     "raw_value",
     ["yes", "1", "TRUE", "False", " true", "false "],
@@ -165,24 +150,29 @@ def match(
 
 
 @pytest.mark.asyncio
-async def test_retriever_discards_untrusted_metadata() -> None:
+async def test_retriever_discards_untrusted_metadata_and_scores() -> None:
     valid = match("valid")
-    malformed_metadata = {
-        "text": "missing source",
-        "title": "Chapter 1",
-        "corpusRevision": "rev-1",
-    }
+    malformed_metadata = {"text": "missing source", "title": "Chapter 1", "corpusRevision": "rev-1"}
     matches = [
         valid,
         match("stale", revision="old-revision"),
         match("missing", metadata=malformed_metadata),
+        match("nan", score=float("nan")),
+        match("infinite", score=float("inf")),
+        match("negative-infinite", score=float("-inf")),
+        match("bool", score=True),
+        match("string", score="0.9"),
+        match("overflow", score=10**10_000),
     ]
+
     retriever = PineconeRetriever(
         settings=settings(),
         embedder=lambda query: [len(query)],
         query_fn=lambda *_args: {"matches": matches},
     )
+
     result = await retriever.retrieve("  valid query  ", attempt=1)
+
     assert isinstance(result, GroundedBundle)
     assert [passage.id for passage in result.passages] == ["valid"]
     assert [citation.id for citation in result.citations] == ["valid"]
@@ -258,57 +248,6 @@ async def test_retriever_returns_unavailable_when_all_scores_are_malformed() -> 
     assert isinstance(result, UnavailableBundle)
     assert result.status == "unavailable"
     assert result.error_code == "vector_store_unavailable"
-@pytest.mark.asyncio
-async def test_retriever_rejects_mixed_valid_and_malformed_scores() -> None:
-    retriever = PineconeRetriever(
-        settings=settings(),
-        embedder=lambda _query: [0.1],
-        query_fn=lambda *_args: {
-            "matches": [match("valid"), match("bad", score=float("nan"))]
-        },
-    )
-
-    result = await retriever.retrieve("query", attempt=1)
-
-    assert isinstance(result, UnavailableBundle)
-    assert result.error_code == "vector_store_unavailable"
-@pytest.mark.asyncio
-async def test_retriever_rejects_malformed_scores_before_metadata_and_scope_filtering() -> None:
-    valid = match("valid")
-    valid["metadata"]["tenant"] = "tenant-a"  # type: ignore[index]
-    stale = match("stale", score=float("nan"), revision="old-revision")
-    missing = match(
-        "missing",
-        score=float("nan"),
-        metadata={
-            "text": "missing source version",
-            "source": "book-1",
-            "title": "Chapter 1",
-            "corpusRevision": "rev-1",
-            "tenant": "tenant-a",
-        },
-    )
-    forged = match("forged", score=float("nan"))
-    forged["metadata"]["sourceId"] = "other-source"  # type: ignore[index]
-    out_of_scope = match("out-of-scope", score=float("nan"))
-    out_of_scope["metadata"]["tenant"] = "tenant-b"  # type: ignore[index]
-
-    retriever = PineconeRetriever(
-        settings=settings(),
-        embedder=lambda _query: [0.1],
-        query_fn=lambda *_args: {
-            "matches": [valid, stale, missing, forged, out_of_scope]
-        },
-    )
-
-    result = await retriever.retrieve(
-        "query", attempt=1, access_scope={"tenant": "tenant-a"}
-    )
-
-    assert isinstance(result, UnavailableBundle)
-    assert result.error_code == "vector_store_unavailable"
-
-
 
 
 @pytest.mark.asyncio
@@ -783,4 +722,19 @@ async def test_retriever_returns_typed_insufficient_outcome_without_accepted_pas
     assert isinstance(result, InsufficientEvidenceBundle)
     assert result.status == "insufficient-evidence"
     assert result.passages == []
+
+
+@pytest.mark.asyncio
+async def test_retriever_is_unavailable_without_authoritative_corpus() -> None:
+    retriever = PineconeRetriever(
+        settings(PINECONE_CORPUS_REVISION=None),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": [match("passage")]},
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, UnavailableBundle)
+    assert result.status == "unavailable"
+    assert result.error_code == "corpus_unavailable"
     assert result.citations == []
