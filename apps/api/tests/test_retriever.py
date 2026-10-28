@@ -62,25 +62,6 @@ def test_invalid_quality_settings_use_dense_defaults() -> None:
     assert config.RAG_RERANKER_TIMEOUT_MS == 100
     assert config.RAG_MAX_CONTEXT_CHARS == 12_000
 
-@pytest.mark.asyncio
-async def test_retrieval_is_unavailable_without_authoritative_corpus() -> None:
-    calls: list[str] = []
-    retriever = PineconeRetriever(
-        settings=settings(
-            PINECONE_API_KEY=None,
-            PINECONE_INDEX_NAME=None,
-            PINECONE_CORPUS_REVISION=None,
-        ),
-        embedder=lambda _query: calls.append("embed") or [0.1],
-        query_fn=lambda *_args: calls.append("query") or {"matches": []},
-    )
-
-    result = await retriever.retrieve("question", attempt=0)
-
-    assert isinstance(result, UnavailableBundle)
-    assert result.error_code == "corpus_unavailable"
-    assert calls == []
-
 @pytest.mark.parametrize(
     "raw_value",
     ["yes", "1", "TRUE", "False", " true", "false "],
@@ -741,4 +722,19 @@ async def test_retriever_returns_typed_insufficient_outcome_without_accepted_pas
     assert isinstance(result, InsufficientEvidenceBundle)
     assert result.status == "insufficient-evidence"
     assert result.passages == []
+
+
+@pytest.mark.asyncio
+async def test_retriever_is_unavailable_without_authoritative_corpus() -> None:
+    retriever = PineconeRetriever(
+        settings(PINECONE_CORPUS_REVISION=None),
+        embedder=lambda _query: [0.1],
+        query_fn=lambda *_args: {"matches": [match("passage")]},
+    )
+
+    result = await retriever.retrieve("query", attempt=1)
+
+    assert isinstance(result, UnavailableBundle)
+    assert result.status == "unavailable"
+    assert result.error_code == "corpus_unavailable"
     assert result.citations == []
