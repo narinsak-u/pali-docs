@@ -178,6 +178,8 @@ async def test_retriever_scope_mismatch_cannot_return_private_passage() -> None:
 
     retriever = PineconeRetriever(
         settings=SimpleNamespace(
+            PINECONE_API_KEY="pinecone-key",
+            PINECONE_INDEX_NAME="pali",
             PINECONE_CORPUS_REVISION="corpus-1",
             PINECONE_NAMESPACE="pali",
             RAG_CANDIDATE_TOP_K=10,
