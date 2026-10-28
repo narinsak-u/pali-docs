@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import time
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -19,6 +24,18 @@ def valid_payload() -> dict[str, object]:
         "threadId": "thread-1",
         "messages": [{"role": "user", "content": "Explain dependent origination."}],
     }
+
+def _principal_token(subject: str = "principal-1", tenant: str = "tenant-1") -> str:
+    now = int(time.time())
+    payload = json.dumps({
+        "iss": "pali-docs-bff", "aud": "pali-docs-api", "sub": subject,
+        "tenantId": tenant, "roles": ["admin"], "documentIds": ["all"],
+        "iat": now - 1, "exp": now + 60,
+    }, separators=(",", ":")).encode()
+    encoded = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
+    signing_input = f"v1.{encoded}"
+    signature = hmac.new(b"identity-secret", signing_input.encode(), hashlib.sha256).digest()
+    return f"{signing_input}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
 def test_question_request_rejects_invalid_final_role() -> None:
@@ -61,6 +78,88 @@ def test_question_request_accepts_private_corpus_revision() -> None:
     assert QuestionRequest.model_validate(payload).corpus_revision == "corpus-1"
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [],
+        [(b"x-principal", b"malformed")],
+        [(b"x-principal", _principal_token(subject="other").encode())],
+    ],
+)
+async def test_question_endpoint_rejects_missing_malformed_or_mismatched_identity_before_runner(
+    monkeypatch: pytest.MonkeyPatch, headers: list[tuple[bytes, bytes]]
+) -> None:
+    runner_created = False
+
+    def create_runner(**_kwargs: object) -> object:
+        nonlocal runner_created
+        runner_created = True
+        return object()
+
+    monkeypatch.setenv("INTERNAL_PRINCIPAL_SECRET", "identity-secret")
+    monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
+    monkeypatch.setattr(
+        question_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            PROVIDER_NAME="openrouter",
+            PINECONE_CORPUS_REVISION="corpus-1",
+            PILOT_TENANT_ID="tenant-1",
+            PILOT_PRINCIPAL_ID="principal-1",
+        ),
+    )
+    monkeypatch.setattr(question_module, "create_langgraph_agent_turn_runner", create_runner)
+    http_request = Request(
+        {"type": "http", "method": "POST", "path": "/v1/question", "headers": headers}
+    )
+
+    with pytest.raises(HTTPException) as error:
+        await question_module.question(QuestionRequest.model_validate(valid_payload()), http_request)
+
+    assert error.value.status_code == 401
+    assert not runner_created
+
+
+@pytest.mark.asyncio
+async def test_question_endpoint_passes_only_configured_pilot_scope_to_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = _principal_token()
+
+    captured: dict[str, AgentTurnInput] = {}
+
+    async def fake_event_stream(_request: Request, _runner: object, turn: AgentTurnInput):
+        captured["turn"] = turn
+        if False:
+            yield b""
+    monkeypatch.setenv("INTERNAL_PRINCIPAL_SECRET", "identity-secret")
+    monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
+    monkeypatch.setattr(
+        question_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            PROVIDER_NAME="openrouter",
+            PINECONE_CORPUS_REVISION="corpus-1",
+            PILOT_TENANT_ID="tenant-1",
+            PILOT_PRINCIPAL_ID="principal-1",
+        ),
+    )
+    monkeypatch.setattr(question_module, "create_langgraph_agent_turn_runner", lambda **_kwargs: object())
+    monkeypatch.setattr(question_module, "_event_stream", fake_event_stream)
+    http_request = Request({
+        "type": "http", "method": "POST", "path": "/v1/question",
+        "headers": [(b"x-principal", token.encode()), (b"x-access-scope", b'{"tenant":"other"}')],
+    })
+
+    response = await question_module.question(
+        QuestionRequest.model_validate(valid_payload()), http_request
+    )
+    _ = [chunk async for chunk in response.body_iterator]
+
+    assert captured["turn"].access_scope == {"tenant": "tenant-1"}
 @pytest.mark.asyncio
 async def test_question_endpoint_rejects_mismatched_corpus_revision_before_runner(
     monkeypatch: pytest.MonkeyPatch,

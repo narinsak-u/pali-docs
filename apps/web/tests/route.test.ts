@@ -268,6 +268,28 @@ describe("POST /api/question", () => {
       request.signal,
     );
   });
+  it("sends only the configured pilot Principal, not browser identity or scope", async () => {
+    vi.stubEnv("RAG_BACKEND", "langgraph");
+    vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
+    vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    vi.stubEnv("PILOT_TENANT_ID", "pilot-tenant");
+    vi.stubEnv("PILOT_PRINCIPAL_ID", "pilot-principal");
+    const request = new Request("http://localhost/api/question", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Access-Scope": '{"tenant":"attacker"}' },
+      body: JSON.stringify(validBody),
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(makeLangGraphResponse([]));
+
+    await POST(request);
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const token = new Headers(init?.headers).get("X-Principal")!;
+    const claims = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString());
+    expect(claims).toMatchObject({ tenantId: "pilot-tenant", sub: "pilot-principal" });
+    expect(claims).not.toHaveProperty("roles");
+  });
+
   it("routes explicit LangGraph traffic through the backend SSE stream", async () => {
     vi.stubEnv("RAG_BACKEND", "langgraph");
     vi.stubEnv("FASTAPI_BASE_URL", " https://fastapi.example.test/// ");

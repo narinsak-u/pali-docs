@@ -61,6 +61,14 @@ LOCAL_LLM_MAX_INFLIGHT=1
 LOCAL_LLM_RATE_LIMIT_PER_MINUTE=60
 INTERNAL_PRINCIPAL_SECRET=<shared only with the trusted BFF>
 ```
+For the private staging deployment, configure the same pilot identity on the BFF and API:
+
+```text
+PILOT_TENANT_ID=<server-owned pilot tenant>
+PILOT_PRINCIPAL_ID=<server-owned pilot principal>
+```
+
+Set `FASTAPI_IDENTITY_SECRET` on Next.js to the same random secret as `INTERNAL_PRINCIPAL_SECRET` on FastAPI. Keep all four values server-side; the BFF sends the signed identity to FastAPI and ignores browser-provided identity and access-scope values. FastAPI rejects tokens whose signed subject or tenant differs from its configured pilot identity and uses only the configured tenant as retrieval scope.
 `LOCAL_LLM_ENABLED=false` is the server-owned kill switch: new Runs select the configured hosted provider and existing streams are allowed to finish or cancel through the same terminal SSE contract. Keep hosted credentials configured on the API process so rollback does not require a browser release.
 
 The hosted provider remains the rollback path: keep the existing `PROVIDER_NAME=openrouter` or `PROVIDER_NAME=opencode` configuration in the hosted environment. Do not add local endpoint or credentials to browser-facing Next.js variables.
