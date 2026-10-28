@@ -26,8 +26,12 @@ def _principal_header(tenant: str = "tenant-a") -> tuple[bytes, bytes]:
     payload = {
         "iss": "pali-docs-bff",
         "aud": "pali-docs-api",
-        "sub": "test-principal",
+        "sub": "pilot-principal",
         "tenantId": tenant,
+        "roles": ["reader"],
+        "permissions": ["document:read"],
+        "documentIds": ["doc-1"],
+        "visibility": "private",
         "iat": now - 1,
         "exp": now + 60,
     }
@@ -73,7 +77,11 @@ async def test_question_boundary_maps_signed_principal_to_turn(
 
     monkeypatch.setenv("INTERNAL_PRINCIPAL_SECRET", "identity-secret")
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
-    monkeypatch.setattr(question_module, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        question_module,
+        "get_settings",
+        lambda: SimpleNamespace(PILOT_TENANT_ID="tenant-a", PILOT_PRINCIPAL_ID="pilot-principal"),
+    )
     monkeypatch.setattr(
         question_module,
         "create_langgraph_agent_turn_runner",
@@ -95,7 +103,13 @@ async def test_question_boundary_maps_signed_principal_to_turn(
     response = await question_module.question(payload(), request)
     _ = [chunk async for chunk in response.body_iterator]
 
-    assert captured["turn"].access_scope == {"tenant": "tenant-a"}
+    assert captured["turn"].access_scope == {
+        "tenant": "tenant-a",
+        "roles": ["reader"],
+        "permissions": ["document:read"],
+        "documentIds": ["doc-1"],
+        "visibility": "private",
+    }
 
 
 @pytest.mark.asyncio
@@ -104,7 +118,11 @@ async def test_question_boundary_rejects_forged_principal_token(
 ) -> None:
     monkeypatch.setenv("INTERNAL_PRINCIPAL_SECRET", "identity-secret")
     monkeypatch.setattr(question_module, "_authorize", lambda *_args: None)
-    monkeypatch.setattr(question_module, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        question_module,
+        "get_settings",
+        lambda: SimpleNamespace(PILOT_TENANT_ID="tenant-a", PILOT_PRINCIPAL_ID="pilot-principal"),
+    )
 
     request = Request(
         {

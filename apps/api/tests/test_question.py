@@ -29,7 +29,8 @@ def _principal_token(subject: str = "principal-1", tenant: str = "tenant-1") -> 
     now = int(time.time())
     payload = json.dumps({
         "iss": "pali-docs-bff", "aud": "pali-docs-api", "sub": subject,
-        "tenantId": tenant, "roles": ["admin"], "documentIds": ["all"],
+        "tenantId": tenant, "roles": ["admin"], "permissions": ["document:read"],
+        "documentIds": ["all"], "visibility": "private",
         "iat": now - 1, "exp": now + 60,
     }, separators=(",", ":")).encode()
     encoded = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
@@ -159,7 +160,13 @@ async def test_question_endpoint_passes_only_configured_pilot_scope_to_runner(
     )
     _ = [chunk async for chunk in response.body_iterator]
 
-    assert captured["turn"].access_scope == {"tenant": "tenant-1"}
+    assert captured["turn"].access_scope == {
+        "tenant": "tenant-1",
+        "roles": ["admin"],
+        "permissions": ["document:read"],
+        "documentIds": ["all"],
+        "visibility": "private",
+    }
 @pytest.mark.asyncio
 async def test_question_endpoint_rejects_mismatched_corpus_revision_before_runner(
     monkeypatch: pytest.MonkeyPatch,

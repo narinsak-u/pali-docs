@@ -157,7 +157,7 @@ def _authenticated_access_scope(
         raise _internal_error(401, "unauthorized", "Authentication required") from error
     if principal.subject != expected_subject.strip() or principal.access.tenant != expected_tenant.strip():
         raise _internal_error(401, "unauthorized", "Authentication required")
-    return {"tenant": expected_tenant.strip()}
+    return principal.access_scope()
 
 
 def _sse(event: AgentEvent) -> bytes:

@@ -4,7 +4,7 @@ services:
       context: ..
       dockerfile: apps/web/Dockerfile
     env_file:
-      - ${WEB_ENV_FILE:-deploy/web.env}
+      - ${WEB_ENV_FILE:-web.env}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
@@ -24,7 +24,7 @@ services:
       context: ../apps/api
       dockerfile: Dockerfile
     env_file:
-      - ${API_ENV_FILE:-deploy/api.env}
+      - ${API_ENV_FILE:-api.env}
     expose:
       - "8000"
     depends_on:
