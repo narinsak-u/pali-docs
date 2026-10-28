@@ -251,6 +251,8 @@ docker compose -f deploy/compose.yml up -d --build
 
 The web is published only on `127.0.0.1:3000`; FastAPI and vLLM have no host ports and share only Compose's private network. The API uses the pinned Qwen3-8B service at `http://vllm:8000/v1`; the BFF selects LangGraph through `RAG_BACKEND=langgraph`, while keeping the browser stream and hosted TypeScript fallback unchanged. API readiness checks the served model; `deploy/compose-smoke.sh` also verifies both private service boundaries. Local non-RAG staging can run without Pinecone configuration. Retrieval stays unavailable until an authoritative corpus revision and metadata are supplied; do not fill in fabricated corpus values.
 
+For the final private staging acceptance (including the real vLLM model/tool smoke, invalid Principal denial, and a non-RAG answer through the BFF), follow [`deploy/STAGING-ACCEPTANCE.md`](./deploy/STAGING-ACCEPTANCE.md) and run `KEEP_DEPLOYMENT=1 ./deploy/compose-smoke.sh` on the target Linux NVIDIA host. The GPU and Tailscale checks are external deployment evidence, not results inferred from this workstation. The smoke removes the stack on exit unless `KEEP_DEPLOYMENT=1` is set.
+
 ### Private tailnet ingress
 
 Run Tailscale on the Docker host, enable MagicDNS and HTTPS certificates for the tailnet, and use the tailnet ACL/grants to authorize only the pilot devices. Configure the host firewall to allow HTTPS only on the Tailscale interface, not on public interfaces; the application is exposed only through Tailscale Serve. Compose binds the web origin to loopback, with no host ports for FastAPI or its health/metrics routes. Never publish the API or vLLM on a public interface.
