@@ -51,6 +51,8 @@ def _settings(**overrides: object) -> Settings:
         "LOCAL_LLM_TIMEOUT_SECONDS": 45,
         "LOCAL_LLM_MAX_OUTPUT_TOKENS": 768,
         "INTERNAL_PRINCIPAL_SECRET": "identity-secret",
+        "PILOT_TENANT_ID": "tenant-test",
+        "PILOT_PRINCIPAL_ID": "test-principal",
     }
     values.update(overrides)
     return Settings(**values)
@@ -80,6 +82,17 @@ def test_local_settings_validate_the_private_model_contract() -> None:
 def test_local_settings_fail_closed_for_invalid_values(field: str, value: object) -> None:
     with pytest.raises(ValidationError):
         _settings(**{field: value})
+
+
+def test_local_settings_allow_non_rag_without_corpus_configuration() -> None:
+    settings = _settings(
+        PINECONE_API_KEY=None,
+        PINECONE_INDEX_NAME=None,
+        PINECONE_CORPUS_REVISION=None,
+    )
+
+    assert settings.PROVIDER_NAME == "local"
+    assert settings.PINECONE_CORPUS_REVISION is None
 
 
 def test_local_provider_uses_the_existing_chat_model_seam() -> None:
@@ -241,6 +254,8 @@ async def test_question_route_keeps_hosted_provider_as_rollback(
         OPENROUTER_API_KEY="hosted-key",
         OPENROUTER_LLM_MODEL="hosted/model",
         INTERNAL_PRINCIPAL_SECRET="identity-secret",
+        PILOT_TENANT_ID="tenant-test",
+        PILOT_PRINCIPAL_ID="test-principal",
     )
     captured: dict[str, object] = {}
 
@@ -275,6 +290,8 @@ async def test_question_route_streams_runner_error_for_invalid_local_limits(
         LOCAL_LLM_TIMEOUT_SECONDS=301,
         LOCAL_LLM_MAX_OUTPUT_TOKENS=768,
         INTERNAL_PRINCIPAL_SECRET="identity-secret",
+        PILOT_TENANT_ID="tenant-test",
+        PILOT_PRINCIPAL_ID="test-principal",
     )
     captured: dict[str, object] = {}
 

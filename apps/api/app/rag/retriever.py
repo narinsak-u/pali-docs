@@ -219,6 +219,20 @@ class PineconeRetriever:
         normalized_query = query.strip()
         if not normalized_query:
             return self._insufficient(normalized_query)
+        if not isinstance(config.PINECONE_CORPUS_REVISION, str) or not config.PINECONE_CORPUS_REVISION.strip():
+            return UnavailableBundle(
+                status="unavailable",
+                query=normalized_query,
+                corpus_revision=None,
+                error_code="corpus_unavailable",
+            )
+        if not config.PINECONE_API_KEY or not config.PINECONE_INDEX_NAME:
+            return UnavailableBundle(
+                status="unavailable",
+                query=normalized_query,
+                corpus_revision=self.settings.PINECONE_CORPUS_REVISION or "",
+                error_code="corpus_unavailable",
+            )
 
         try:
             embedding = await self._off_loop(self._embedder, normalized_query)

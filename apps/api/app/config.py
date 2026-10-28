@@ -75,10 +75,10 @@ class Settings(BaseSettings):
     LOCAL_LLM_MAX_INFLIGHT: int = Field(default=1, ge=1, le=4)
     LOCAL_LLM_RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=600)
 
-    PINECONE_API_KEY: str = Field(min_length=1)
-    PINECONE_INDEX_NAME: str = Field(min_length=1)
+    PINECONE_API_KEY: str | None = None
+    PINECONE_INDEX_NAME: str | None = None
     PINECONE_NAMESPACE: str = ""
-    PINECONE_CORPUS_REVISION: str = Field(min_length=1)
+    PINECONE_CORPUS_REVISION: str | None = None
     PINECONE_EMBEDDING_MODEL: str = "llama-text-embed-v2"
 
     RAG_CANDIDATE_TOP_K: int = Field(default=20, ge=1, le=50)
@@ -91,8 +91,9 @@ class Settings(BaseSettings):
     RAG_RERANKER_TIMEOUT_MS: int = Field(default=100, ge=1, le=2000)
     RAG_MAX_CONTEXT_CHARS: int = Field(default=12000, ge=1000, le=50000)
 
-    INTERNAL_API_TOKEN: str | None = None
     INTERNAL_PRINCIPAL_SECRET: str | None = None
+    PILOT_TENANT_ID: str | None = None
+    PILOT_PRINCIPAL_ID: str | None = None
 
     @model_validator(mode="before")
     @classmethod

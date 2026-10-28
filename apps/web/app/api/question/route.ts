@@ -103,8 +103,10 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const runId = globalThis.crypto.randomUUID();
-  const accessScope = getAuthenticatedAccessScope(req);
   const identitySecret = process.env.FASTAPI_IDENTITY_SECRET?.trim();
+
+  const pilotTenant = process.env.PILOT_TENANT_ID?.trim();
+  const pilotPrincipal = process.env.PILOT_PRINCIPAL_ID?.trim();
   const backend = selectQuestionBackend(req, runId);
   const configuredLangGraph =
     backend === "langgraph" &&
@@ -113,11 +115,18 @@ export async function POST(req: Request): Promise<Response> {
         process.env.FASTAPI_INTERNAL_TOKEN?.trim() &&
         identitySecret,
     );
+  if (
+    configuredLangGraph &&
+    (!pilotTenant || !pilotPrincipal)
+  ) {
+    return errorResponse(503, "service_unavailable", "Question service unavailable");
+  }
+  const accessScope =
+    pilotTenant && pilotPrincipal
+      ? { tenant: pilotTenant, principalId: pilotPrincipal }
+      : getAuthenticatedAccessScope(req);
   if (accessScope === undefined && configuredLangGraph) {
-    return new Response(JSON.stringify({ error: "authenticated access scope is required" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
+    return errorResponse(401, "unauthorized", "Authentication required");
   }
 
   if (backend === "langgraph") {
@@ -159,6 +168,9 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     if (!backendResponse.ok) {
+      if (backendResponse.status === 401 || backendResponse.status === 403) {
+        return errorResponse(backendResponse.status, "unauthorized", "Authentication failed");
+      }
       if (req.signal.aborted) req.signal.throwIfAborted();
       console.error("LangGraph question fallback:", {
         runId,

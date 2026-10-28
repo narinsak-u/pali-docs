@@ -142,18 +142,22 @@ def _configured_principal_secret(settings: object | None = None) -> str | None:
 
 def _authenticated_access_scope(
     request: Request, settings: object
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     raw = request.headers.get("x-principal")
     if raw is None:
-        return None
+        raise _internal_error(401, "unauthorized", "Authentication required")
     secret = _configured_principal_secret(settings)
-    if secret is None:
+    expected_tenant = getattr(settings, "PILOT_TENANT_ID", None)
+    expected_subject = getattr(settings, "PILOT_PRINCIPAL_ID", None)
+    if secret is None or not isinstance(expected_tenant, str) or not expected_tenant.strip() or not isinstance(expected_subject, str) or not expected_subject.strip():
         raise _internal_error(503, "service_unavailable", "Question service unavailable")
     try:
-        return decode_principal_token(raw, secret).access_scope()
+        principal = decode_principal_token(raw, secret)
     except IdentityValidationError as error:
         raise _internal_error(401, "unauthorized", "Authentication required") from error
-
+    if principal.subject != expected_subject.strip() or principal.access.tenant != expected_tenant.strip():
+        raise _internal_error(401, "unauthorized", "Authentication required")
+    return principal.access_scope()
 
 
 def _sse(event: AgentEvent) -> bytes:
@@ -367,7 +371,10 @@ async def question(
         configured_provider = getattr(settings, "PROVIDER_NAME", "openrouter")
         provider = selected_provider(settings)
         access_scope = _authenticated_access_scope(request, settings)
-        if payload.corpus_revision is not None and payload.corpus_revision != settings.PINECONE_CORPUS_REVISION:
+        if payload.corpus_revision is not None and (
+            not settings.PINECONE_CORPUS_REVISION
+            or payload.corpus_revision != settings.PINECONE_CORPUS_REVISION
+        ):
             raise _internal_error(400, "invalid_request", "Invalid request")
         if not access_scope:
             raise _internal_error(401, "unauthorized", "Authenticated access scope is required")

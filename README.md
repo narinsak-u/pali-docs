@@ -235,3 +235,44 @@ bunx vitest run tests/route.test.ts
 - [Next.js Docs](https://nextjs.org/docs) — framework fundamentals
 - [Learn Next.js](https://nextjs.org/learn) — interactive tutorial
 - [Fumadocs](https://fumadocs.vercel.app) — documentation framework
+
+## Private web and API containers
+
+Build the web and API independently with `docker build -f apps/web/Dockerfile .` and `docker build -f apps/api/Dockerfile apps/api`. Start the Compose deployment on the host with:
+
+```bash
+cp deploy/web.env.example deploy/web.env
+cp deploy/api.env.example deploy/api.env
+cp deploy/vllm/.env.example deploy/vllm/.env
+# Replace matching pilot identity/token/secret values and the vLLM key in API and vLLM env files.
+# Optional HF_TOKEN can be set in deploy/vllm/.env for authenticated model downloads.
+docker compose --env-file deploy/vllm/.env -f deploy/compose.yml up -d --build
+```
+
+The web is published only on `127.0.0.1:3000`; FastAPI and vLLM have no host ports and share only Compose's private network. The API uses the pinned Qwen3-8B service at `http://vllm:8000/v1`; the BFF selects LangGraph through `RAG_BACKEND=langgraph`, while keeping the browser stream and hosted TypeScript fallback unchanged. API readiness checks the served model; `deploy/compose-smoke.sh` also verifies both private service boundaries. Local non-RAG staging can run without Pinecone configuration. Retrieval stays unavailable until an authoritative corpus revision and metadata are supplied; do not fill in fabricated corpus values.
+
+For the final private staging acceptance (including the real vLLM model/tool smoke, invalid Principal denial, and a non-RAG answer through the BFF), follow [`deploy/STAGING-ACCEPTANCE.md`](./deploy/STAGING-ACCEPTANCE.md) and run `KEEP_DEPLOYMENT=1 ./deploy/compose-smoke.sh` on the target Linux NVIDIA host. The GPU and Tailscale checks are external deployment evidence, not results inferred from this workstation. The smoke removes the stack on exit unless `KEEP_DEPLOYMENT=1` is set.
+
+### Private tailnet ingress
+
+Run Tailscale on the Docker host, enable MagicDNS and HTTPS certificates for the tailnet, and use the tailnet ACL/grants to authorize only the pilot devices. Configure the host firewall to allow HTTPS only on the Tailscale interface, not on public interfaces; the application is exposed only through Tailscale Serve. Compose binds the web origin to loopback, with no host ports for FastAPI or its health/metrics routes. Never publish the API or vLLM on a public interface.
+
+On the host, configure persistent HTTPS Serve to proxy only the loopback web origin:
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:3000
+tailscale serve status
+tailscale funnel status
+```
+
+The Serve status should identify the host's private `*.ts.net` HTTPS name and proxy to `127.0.0.1:3000`; Funnel status must show no public Funnel. From an authorized device connected to the tailnet, open that HTTPS name and use the site. From a device outside the tailnet, the private name/service must not be reachable. Confirm `http://127.0.0.1:3000` is not bound on a non-loopback host address and that neither API nor model ports are published publicly. Tailscale Serve and Funnel are separate: do not run `tailscale funnel`; Funnel exposes the service to the broader internet.
+
+Disable access immediately on the host, without a browser release:
+
+```bash
+tailscale serve --https=443 off
+```
+
+The browser continues to use the same web routes through the proxy; do not use Tailscale identity headers as application identity. The fixed staging Tenant/Principal remains server-owned and the signed Principal contract remains authoritative. See [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) and [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel).
+
+Keep `deploy/web.env`, `deploy/api.env`, and `deploy/vllm/.env` outside source control. These are runtime-only settings, not Docker build arguments; public `NEXT_PUBLIC_*` variables must never contain credentials.
