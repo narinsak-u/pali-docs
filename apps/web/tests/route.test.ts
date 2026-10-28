@@ -253,6 +253,10 @@ describe("POST /api/question", () => {
     expect(mocked.runTurn).toHaveBeenCalledWith(
       {
         runId: "00000000-0000-4000-8000-000000000006",
+        accessScope: {
+          tenant: "pilot-tenant",
+          principalId: "pilot-principal",
+        },
         messages: [
           {
             id: "assistant-1",
@@ -270,6 +274,7 @@ describe("POST /api/question", () => {
       request.signal,
     );
   });
+
   it("sends only the configured pilot Principal, not browser identity or scope", async () => {
     vi.stubEnv("RAG_BACKEND", "langgraph");
     vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
@@ -348,10 +353,12 @@ describe("POST /api/question", () => {
     });
     expect(JSON.stringify(await response.json())).toContain("BACKEND ANSWER");
   });
-  it("rejects LangGraph retrieval without server-authenticated scope", async () => {
+  it("fails closed when the staging Principal is not configured", async () => {
     vi.stubEnv("RAG_BACKEND", "langgraph");
     vi.stubEnv("FASTAPI_BASE_URL", "https://fastapi.example.test");
     vi.stubEnv("FASTAPI_INTERNAL_TOKEN", "backend-token");
+    vi.stubEnv("PILOT_TENANT_ID", "");
+    vi.stubEnv("PILOT_PRINCIPAL_ID", "");
     const fetchMock = vi.spyOn(globalThis, "fetch");
 
     const response = await POST(new Request("http://localhost/api/question", {
@@ -360,8 +367,11 @@ describe("POST /api/question", () => {
       body: JSON.stringify(validBody),
     }));
 
-    expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: "authenticated access scope is required" });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "service_unavailable",
+      message: "Question service unavailable",
+    });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
