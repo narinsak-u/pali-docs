@@ -27,6 +27,7 @@
 .env
 .env*.local
 .vercel
+deploy/*.env
 next-env.d.ts
 
 # agents
