@@ -52,6 +52,8 @@ def _settings(**overrides: object) -> Settings:
         "LOCAL_LLM_MAX_OUTPUT_TOKENS": 768,
         "INTERNAL_API_TOKEN": "internal-token",
         "INTERNAL_PRINCIPAL_SECRET": "identity-secret",
+        "PILOT_TENANT_ID": "tenant-test",
+        "PILOT_PRINCIPAL_ID": "test-principal",
     }
     values.update(overrides)
     return Settings(**values)

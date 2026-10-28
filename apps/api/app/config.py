@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     RAG_RERANKER_TIMEOUT_MS: int = Field(default=100, ge=1, le=2000)
     RAG_MAX_CONTEXT_CHARS: int = Field(default=12000, ge=1000, le=50000)
 
+    INTERNAL_PRINCIPAL_SECRET: str | None = None
     PILOT_TENANT_ID: str | None = None
     PILOT_PRINCIPAL_ID: str | None = None
 
