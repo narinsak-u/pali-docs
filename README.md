@@ -247,6 +247,28 @@ cp deploy/api.env.example deploy/api.env
 docker compose -f deploy/compose.yml up -d --build
 ```
 
-The web is published only on `127.0.0.1:3000`; FastAPI has no host port and is reachable only on Compose's private network. There is no Tailscale ingress or vLLM container in this deployment slice. Compose reports web/API liveness independently; API readiness is available on the private network at `/readyz`. `deploy/compose-smoke.sh` exercises the live web page and API liveness/readiness when runtime configuration is present. Local staging readiness requires a configured provider and its runtime credentials.
+The web is published only on `127.0.0.1:3000`; FastAPI has no host port and is reachable only on Compose's private network. Compose reports web/API liveness independently; API readiness is available on the private network at `/readyz`. `deploy/compose-smoke.sh` exercises the live web page, verifies the web/API host-port bindings, and checks API liveness/readiness when runtime configuration is present. Local staging readiness requires a configured provider and its runtime credentials.
+
+### Private tailnet ingress
+
+Run Tailscale on the Docker host, enable MagicDNS and HTTPS certificates for the tailnet, and use the tailnet ACL/grants to authorize only the pilot devices. Configure the host firewall to allow HTTPS only on the Tailscale interface, not on public interfaces; the application is exposed only through Tailscale Serve. Compose binds the web origin to loopback, with no host ports for FastAPI or its health/metrics routes. Never publish the API or vLLM on a public interface.
+
+On the host, configure persistent HTTPS Serve to proxy only the loopback web origin:
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:3000
+tailscale serve status
+tailscale funnel status
+```
+
+The Serve status should identify the host's private `*.ts.net` HTTPS name and proxy to `127.0.0.1:3000`; Funnel status must show no public Funnel. From an authorized device connected to the tailnet, open that HTTPS name and use the site. From a device outside the tailnet, the private name/service must not be reachable. Confirm `http://127.0.0.1:3000` is not bound on a non-loopback host address and that neither API nor model ports are published publicly. Tailscale Serve and Funnel are separate: do not run `tailscale funnel`; Funnel exposes the service to the broader internet.
+
+Disable access immediately on the host, without a browser release:
+
+```bash
+tailscale serve --https=443 off
+```
+
+The browser continues to use the same web routes through the proxy; do not use Tailscale identity headers as application identity. The fixed staging Tenant/Principal remains server-owned and the signed Principal contract remains authoritative. See [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) and [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel).
 
 Keep `deploy/web.env` and `deploy/api.env` outside source control. These are runtime-only settings, not Docker build arguments; public `NEXT_PUBLIC_*` variables must never contain credentials.
