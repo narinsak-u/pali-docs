@@ -243,11 +243,13 @@ Build the web and API independently with `docker build -f apps/web/Dockerfile .`
 ```bash
 cp deploy/web.env.example deploy/web.env
 cp deploy/api.env.example deploy/api.env
-# Replace every placeholder with operator-provided runtime values first.
+# Replace provider, pilot identity, and shared API/identity secrets; leave Pinecone unset until verified.
+export VLLM_API_KEY='a-server-only-random-secret'
+# Optional on first download: export HF_TOKEN='operator-token'
 docker compose -f deploy/compose.yml up -d --build
 ```
 
-The web is published only on `127.0.0.1:3000`; FastAPI has no host port and is reachable only on Compose's private network. Compose reports web/API liveness independently; API readiness is available on the private network at `/readyz`. `deploy/compose-smoke.sh` exercises the live web page, verifies the web/API host-port bindings, and checks API liveness/readiness when runtime configuration is present. Local staging readiness requires a configured provider and its runtime credentials.
+The web is published only on `127.0.0.1:3000`; FastAPI and vLLM have no host ports and share only Compose's private network. The API uses the pinned Qwen3-8B service at `http://vllm:8000/v1`; the BFF selects LangGraph through `RAG_BACKEND=langgraph`, while keeping the browser stream and hosted TypeScript fallback unchanged. API readiness checks the served model; `deploy/compose-smoke.sh` also verifies both private service boundaries. Local non-RAG staging can run without Pinecone configuration. Retrieval stays unavailable until an authoritative corpus revision and metadata are supplied; do not fill in fabricated corpus values.
 
 ### Private tailnet ingress
 

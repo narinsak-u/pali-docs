@@ -82,6 +82,17 @@ def test_local_settings_fail_closed_for_invalid_values(field: str, value: object
         _settings(**{field: value})
 
 
+def test_local_settings_allow_non_rag_without_corpus_configuration() -> None:
+    settings = _settings(
+        PINECONE_API_KEY=None,
+        PINECONE_INDEX_NAME=None,
+        PINECONE_CORPUS_REVISION=None,
+    )
+
+    assert settings.PROVIDER_NAME == "local"
+    assert settings.PINECONE_CORPUS_REVISION is None
+
+
 def test_local_provider_uses_the_existing_chat_model_seam() -> None:
     model = LangChainModelStages(settings=_settings())._chat()
 
