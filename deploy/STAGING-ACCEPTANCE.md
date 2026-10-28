@@ -1,6 +1,6 @@
 # Private staging acceptance
 
-This is a private pilot, not a production promotion. Keep `deploy/web.env` and `deploy/api.env` server-side and out of source control. Configure the same valid, operator-owned pilot tenant/principal and identity secret on both services; preserve hosted provider credentials on the server for the existing pre-stream rollback. Leave Pinecone credentials/index/revision unset until the authoritative corpus and evaluation artifacts are verified. Never put internal tokens, model credentials, API URLs, or identity secrets in public `NEXT_PUBLIC_*` variables.
+This is a private pilot, not a production promotion. Keep `deploy/web.env`, `deploy/api.env`, and `deploy/vllm/.env` server-side and out of source control. Configure the same valid, operator-owned pilot tenant/principal and identity secret on both services; preserve hosted provider credentials on the server for the existing pre-stream rollback. Leave Pinecone credentials/index/revision unset until the authoritative corpus and evaluation artifacts are verified. Never put internal tokens, model credentials, API URLs, or identity secrets in public `NEXT_PUBLIC_*` variables.
 
 ## Target-host acceptance
 
@@ -11,7 +11,17 @@ nvidia-smi
 docker run --rm --gpus all vllm/vllm-openai:v0.9.0 nvidia-smi
 ```
 
-Use the repository-pinned Compose model image and model revision; do not substitute tags or model revisions. After creating the two runtime env files and supplying actual secrets, run from the repository root:
+Before running the smoke, create the private runtime files from the checked-in examples and replace every placeholder. The vLLM Compose interpolation values are loaded explicitly from `deploy/vllm/.env` by both the smoke script and the manual Compose command:
+
+```bash
+cp deploy/web.env.example deploy/web.env
+cp deploy/api.env.example deploy/api.env
+cp deploy/vllm/.env.example deploy/vllm/.env
+```
+
+Keep the same `VLLM_API_KEY` in `deploy/vllm/.env` and `LOCAL_LLM_API_KEY` in `deploy/api.env`; set `HF_TOKEN` in `deploy/vllm/.env` only if required for model download.
+
+Use the repository-pinned Compose model image and model revision; do not substitute tags or model revisions. After creating the three runtime env files and supplying actual secrets, run from the repository root:
 
 ```bash
 KEEP_DEPLOYMENT=1 ./deploy/compose-smoke.sh
@@ -44,7 +54,7 @@ tailscale funnel status
 sudo ss -ltnp
 ```
 
-Serve status must show only the host's private `*.ts.net` endpoint proxying to `127.0.0.1:3000`; Funnel must not expose a service. Confirm the web listener is loopback-only and Compose publishes no API/model port. From an authorized, tailnet-connected device, open the Serve HTTPS name and complete the question smoke above in the browser. From a device outside the tailnet, verify the Serve name cannot be reached. Record the date, host/GPU and driver, Compose image IDs, vLLM model/revision, authorized-device result, external-device result, and command outputs; do not record secrets. Stop ingress with `tailscale serve --https=443 off` and stop the deployment with `docker compose -f deploy/compose.yml down`.
+Serve status must show only the host's private `*.ts.net` endpoint proxying to `127.0.0.1:3000`; Funnel must not expose a service. Confirm the web listener is loopback-only and Compose publishes no API/model port. From an authorized, tailnet-connected device, open the Serve HTTPS name and complete the question smoke above in the browser. From a device outside the tailnet, verify the Serve name cannot be reached. Record the date, host/GPU and driver, Compose image IDs, vLLM model/revision, authorized-device result, external-device result, and command outputs; do not record secrets. Stop ingress with `tailscale serve --https=443 off` and stop the deployment with `docker compose --env-file deploy/vllm/.env -f deploy/compose.yml down`.
 
 ## RAG and evaluation gate
 

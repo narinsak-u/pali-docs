@@ -243,10 +243,10 @@ Build the web and API independently with `docker build -f apps/web/Dockerfile .`
 ```bash
 cp deploy/web.env.example deploy/web.env
 cp deploy/api.env.example deploy/api.env
-# Replace provider, pilot identity, and shared API/identity secrets; leave Pinecone unset until verified.
-export VLLM_API_KEY='a-server-only-random-secret'
-# Optional on first download: export HF_TOKEN='operator-token'
-docker compose -f deploy/compose.yml up -d --build
+cp deploy/vllm/.env.example deploy/vllm/.env
+# Replace matching pilot identity/token/secret values and the vLLM key in API and vLLM env files.
+# Optional HF_TOKEN can be set in deploy/vllm/.env for authenticated model downloads.
+docker compose --env-file deploy/vllm/.env -f deploy/compose.yml up -d --build
 ```
 
 The web is published only on `127.0.0.1:3000`; FastAPI and vLLM have no host ports and share only Compose's private network. The API uses the pinned Qwen3-8B service at `http://vllm:8000/v1`; the BFF selects LangGraph through `RAG_BACKEND=langgraph`, while keeping the browser stream and hosted TypeScript fallback unchanged. API readiness checks the served model; `deploy/compose-smoke.sh` also verifies both private service boundaries. Local non-RAG staging can run without Pinecone configuration. Retrieval stays unavailable until an authoritative corpus revision and metadata are supplied; do not fill in fabricated corpus values.
@@ -275,4 +275,4 @@ tailscale serve --https=443 off
 
 The browser continues to use the same web routes through the proxy; do not use Tailscale identity headers as application identity. The fixed staging Tenant/Principal remains server-owned and the signed Principal contract remains authoritative. See [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) and [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel).
 
-Keep `deploy/web.env` and `deploy/api.env` outside source control. These are runtime-only settings, not Docker build arguments; public `NEXT_PUBLIC_*` variables must never contain credentials.
+Keep `deploy/web.env`, `deploy/api.env`, and `deploy/vllm/.env` outside source control. These are runtime-only settings, not Docker build arguments; public `NEXT_PUBLIC_*` variables must never contain credentials.
